@@ -2,8 +2,6 @@
 
 面向本地 Codex 的轻量 Provider 管理工作台。第一版采用 Java 17 + Spring WebFlux + SQLite 后端、React + TypeScript 网页端；两个进程独立启动。桌面端暂不实现，后续由 Tauri 封装现有前端并管理 Java 进程。
 
-本目录为 Codex Squire 新版主线。旧版源码已归档至 `D:\Projects\deprecated-projects\codex-squire`，新旧实现的分析见 [版本对比](docs/legacy-comparison.md)。
-
 ## 已实现
 
 - Provider 的创建、编辑、启停、删除；Base URL + API Key，远程地址要求 HTTPS。
