@@ -1,0 +1,165 @@
+# 第一版架构与设计决策
+
+## 1. 目标和边界
+
+业务核心是「选择一个可用的 API Key 来源，为本地 Codex 转发一次 Responses 请求，并可信地结算本次请求的用量」。Provider、路由方案和使用记录互相独立，未来的会话管理、提示词管理以新领域模块加入。
+
+这是新实现，未迁移或修改 `D:\Projects\codex-squire`，也未复用其数据库。参考 `D:\Projects\github-cloned\Codex-Manager` 的 service / web / desktop 职责划分，而不复刻其 OAuth、RPC 分发、多协议适配和桌面桥接复杂度。
+
+参考项目的关键阅读入口：
+
+- `docs/zh-CN/ARCHITECTURE.md`：运行形态、目录边界和发布关系。
+- `crates/service/src/gateway/mod.rs` 与其 request、upstream、protocol_adapter 子模块：请求入口、传输与协议转换边界。
+- `docs/zh-CN/report/当前网关与Codex请求头和参数差异表.md`：会话亲和、请求重写、上游头部等职责。
+- `crates/service/tests/gateway_logs/`：故障转移、额度与日志的联动测试范围。
+
+本版选择直接转发 Responses 原始请求体，不做工具名映射、模型替换或协议转换。这减少了兼容面，也意味着所有成员 Provider 必须支持请求中使用的模型和参数。
+
+## 2. 部署结构
+
+```mermaid
+flowchart LR
+    Browser[React 浏览器界面] -->|管理令牌 /api| Vite[网页进程与本地代理]
+    Vite --> Backend[WebFlux 后端]
+    Codex[本地 Codex] -->|网关令牌 /v1/responses| Backend
+    Backend --> Router[方案快照与候选顺序]
+    Router --> Admission[事务准入与额度预留]
+    Admission --> WebClient[WebClient HTTP/SSE]
+    WebClient --> Upstream[Provider Base URL]
+    WebClient --> Usage[增量 usage 观察与结算]
+    Admission --> SQLite[(SQLite WAL)]
+    Usage --> SQLite
+    Backend --> Secrets[本机密钥文件 / AES-GCM]
+```
+
+开发和本地使用时网页通过 Vite 同源代理访问后端，后端和网页都只监听回环地址。网关流量直接进入后端，不需要网页进程在线。
+
+## 3. 模块和依赖方向
+
+| 包 / 目录 | 职责 |
+| --- | --- |
+| `api` | 路由、DTO 校验、HTTP 状态和稳定错误结构 |
+| `provider` | 来源实体、配置校验、密钥更新语义、持久化 |
+| `scheme` | 方案聚合、成员顺序和权重、原子激活 |
+| `gateway` | 路由候选、上游生命周期、原始数据流转发、增量解析 |
+| `usage` | 原子准入、占额、幂等结算、统计和日志查询 |
+| `security` | 管理/网关鉴权、Origin 约束、凭据加解密 |
+| `persistence` | SQLite 连接配置、事务、进程锁和 schema 迁移 |
+| `config` | 有界 JDBC 调度器与 UTC 时钟 |
+| `frontend/src/features` | 按领域拆分的页面与编辑器 |
+| `frontend/src/api.ts` | 类型化 API 客户端与统一异常映射 |
+
+`api -> 业务组件 -> persistence` 为主要调用方向。实体与输入对象使用不可变 record，服务采用构造器注入。未引入为单一实现服务的空接口、万能 BaseService 或大型框架包装。
+
+SQLite JDBC 是阻塞驱动，**不是伪装成 R2DBC**。所有请求期间的 JDBC 操作显式放在名为 `sqlite` 的有界调度器：4 线程，每线程最多排队 1024 项。WebFlux/Netty 负责网络 I/O 和流转发。短期阻塞事务只用于配置写入、准入和结算，不持有整个模型响应期间的数据库锁。
+
+## 4. 数据模型
+
+### Provider
+
+包含名称、Base URL、加密 API Key、启用状态、每日请求上限、每日 Token 上限、最大并发、单次 Token 预留和创建时间。名称唯一；API Key 留空更新时保留旧值。Base URL 禁止用户信息、查询参数和 fragment，远程 HTTP 被拒绝。
+
+### Scheme / Member
+
+Scheme 包含策略和生效标记，成员列表是聚合的一部分。成员有显式 position 和 weight。一次保存完整替换成员列表，整个操作在同一事务中完成；失败时恢复原有方案。
+
+SQLite 部分唯一索引约束 `active = 1` 的行最多一条。激活先撤销旧标记再设置新标记，均在一个写事务内。生效方案不可直接删除，空方案不可激活。被方案引用的 Provider 不可删除。
+
+### Attempt
+
+一行代表一次真实上游尝试。保存 request ID、attempt ID、Provider ID/名称快照、方案 ID、模型、开始/结束时间、状态、HTTP 状态、预留/结算 Token、缓存 Token、用量口径、耗时。
+
+日志刻意不保存提示词、响应正文或凭据。Provider 删除不级联清除历史记录。`provider_id + day`、进行中请求、开始时间、网关请求 ID 建有索引。
+
+统计以 attempt 为口径，不能等同于用户请求次数。失败后 429 切换的两个 Provider 各有自己的尝试记录，并共享网关 request ID。
+
+## 5. 路由算法
+
+1. 读取当前生效方案和成员快照。
+2. 按序策略直接使用成员顺序。
+3. 加权轮询使用单调递增序号对总权重取模，选择对应权重区间的成员作为首选，再旋转候选列表。
+4. 依次尝试事务准入，跳过禁用、请求限额、Token 预算不足或并发满载的 Provider。
+5. 发送一次上游请求。仅在明确的 429 拒绝且存在后续候选时继续；每个成员最多一次。
+6. 返回已收到的上游状态/响应，或返回 `503 NO_AVAILABLE_PROVIDER`。
+
+权重 2:1 的两个持续可用来源在每三个首选请求中分别获得 2 和 1 次。该策略平衡请求数量，不估测模型延迟、吞吐或金额；当前轮询序号是进程内状态，重启不保留。方案切换影响新请求，进行中的请求继续使用已选来源。
+
+默认不为 5xx 和连接异常自动重放，因为无法确认上游是否已经开始执行。失败次数不会被当作健康探测结果，也没有隐藏的付费周期探测。
+
+## 6. 请求生命周期
+
+```mermaid
+stateDiagram-v2
+    [*] --> IN_FLIGHT: 原子准入和预留
+    IN_FLIGHT --> SUCCEEDED: 收到完整完成响应
+    IN_FLIGHT --> INCOMPLETE: incomplete 或缺少完成事件
+    IN_FLIGHT --> FAILED: response.failed / error
+    IN_FLIGHT --> RATE_LIMITED: 429 且切换候选
+    IN_FLIGHT --> UPSTREAM_ERROR: 4xx / 5xx 透传
+    IN_FLIGHT --> TRANSPORT_ERROR: 超时或连接失败
+    IN_FLIGHT --> CANCELLED: 下游取消订阅
+    IN_FLIGHT --> INTERRUPTED: 后端重启恢复
+```
+
+通过 `Mono.usingWhen` 管理每次已准入尝试的完成、异常、取消清理。结算 SQL 只更新仍处于 `IN_FLIGHT` 的记录，因此重复清理不会重复记账。异步 JDBC 准入期间发生取消时，丢弃钩子负责释放已经落库的尝试。
+
+上游 `ClientResponse` 的 body 在 `exchangeToMono` 回调内部消耗；不把响应对象带出其生命周期。上游完成后使用明确的 `Outcome.DELIVERED`，不依据 `Mono<Void>` 为空来判断成功或重试。
+
+下游已提交之后的网络错误只能导致流结束或断开，不能重新构造一个普通 JSON 错误响应。实际 HTTP 状态可能已是 200；应结合日志中的最终状态检查。
+
+## 7. SSE 与 Token 统计
+
+网络转发不重编码 JSON、不拼接完整 SSE 流。每个 DataBuffer 的原始字节向下游转发，并即时 flush，以保持交互延迟和取消传播。
+
+UsageInspector 只观察数据：
+
+- 字节级识别 LF、CRLF 和 CR，允许一个 UTF-8 字符被拆到多个网络包。
+- 在完整行后解码 UTF-8，支持一个事件多行 `data:`。
+- 从 `response.completed`、`response.incomplete`、`response.failed` 的嵌套 `response.usage` 读取最终用量。
+- 非流式读取顶层 `usage`；输入/输出必须为非负整数，缓存不得超过输入。
+- 单个 SSE 事件观察上限 1 MiB；过大事件仍原样转发，但不解析，随后继续寻找终结事件。
+- 非流式观察上限 8 MiB；不截断转发。解析不到可信 usage 时保留预留口径。
+- 忽略 `[DONE]`、格式错误、负数和中间事件的临时 usage。
+
+`REPORTED` 表示上游实际报告；`RESERVED` 表示未知用量按配置占额；`NOT_APPLICABLE` 表示 4xx 拒绝无需 Token 占额。4xx 若携带可信 usage 则仍优先采用实际值。
+
+## 8. 限额一致性
+
+准入在 `BEGIN IMMEDIATE` 中查询当日请求和占额、所有日期的进行中数量，并插入预留记录。SQLite 的写锁使检查与占额不可被另一个写请求穿插。
+
+`可准入 = enabled && inFlight < maxConcurrency && requests < requestLimit && charged + reservation <= tokenLimit`，其中 `0` 上限跳过对应检查。
+
+结算不扣除请求次数；实际 usage 替换 charged_tokens。超出预留时如实结算而不是截断数字。Unknown 或取消记录保留预留，避免通过断开连接来释放全部 Token 预算。
+
+此机制不能从远端预知最终 Token。它防止本地预留额度被并发超卖，但不保证上游账单绝不超过日预算；需要硬费用上限时，应同时使用来源服务商侧的硬限额。
+
+## 9. 安全与运行边界
+
+- 32 字节随机主密钥、管理令牌和网关令牌独立生成，不共享固定默认密钥。
+- 上游 API Key 使用 AES-256-GCM，每次加密生成独立 12 字节 nonce。
+- Linux/macOS 权限为目录 700、密钥 600；Windows 通过 ACL 限制为当前文件所有者并为数据目录设置继承。
+- 两个不同令牌保护管理和代理接口；Origin 必须匹配显式本地允许列表。禁用基于 Cookie 的隐式鉴权。
+- 后端仅监听 `127.0.0.1`，不跟随上游重定向，不透传入站 Authorization/Cookie。
+- 网络连接超时 10 秒、上游读空闲超时 120 秒、总尝试时间 1800 秒；请求体最大 8 MiB。
+- 每个数据目录有一个进程锁，防止两个后端同时恢复、结算同一份数据。所有连接设置 foreign_keys 和 busy_timeout，数据库启用 WAL。
+
+密钥文件和数据库在同一用户权限边界内，加密不能保护已经能够读取整个目录的攻击者。此版本不是多用户 RBAC、远程认证网关或企业密钥托管系统。
+
+备份时先停止后端，再备份整个数据目录，包括 `master.key`。仅备份 `squire.db` 无法解密来源密钥；运行中直接复制单个 DB 文件也可能遗漏 WAL。恢复时使用同一应用版本或兼容的后续版本。不要手动删除主密钥来“重置”来源。
+
+## 10. Tauri 与后续模块
+
+未来 Tauri 只负责窗口、托盘、单实例、后端进程生命周期和受控的凭据获取。Java 后端继续拥有 Provider、路由、额度和 SQLite。前端通过 `ApiClient` 增加桌面传输适配，不能在组件内散落 `invoke` 和绝对端口。
+
+桌面打包前需要解决：JRE 裁剪或打包、Java 子进程退出回收、后端就绪握手、动态端口发现、Tauri origin/CSP、系统凭据库和升级迁移。本版没有声称这些已经实现。
+
+会话管理应新增 session 领域并解决 response ID 到 Provider 的持久化绑定；提示词管理新增 prompt 领域，不依赖网关内部日志正文。日志归档、按时段统计和基于实际延迟的负载均衡可在保留现有 API 的前提下演进。
+
+## 11. 协议依据与验证限制
+
+目标协议为 OpenAI Responses API。官方入口：
+
+- <https://developers.openai.com/codex/config-reference/>
+- <https://platform.openai.com/docs/api-reference/responses-streaming/response/completed>
+
+本次按 OpenAI Docs 工作流尝试抓取官方页面时，官方域名 TLS 连接失败，因此没有把未读取的页面当成实时文档证据。当前配置字段和事件形态由兼容性实现、参考项目及本地自动化测试支撑。尚未用用户真实 Provider 的 Key 调用付费 API；第三方来源的字段兼容性仍应通过页面连通测试核验。

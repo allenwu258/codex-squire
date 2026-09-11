@@ -1,0 +1,42 @@
+# IDE and local tooling
+.idea/
+.vscode/
+.tools/
+
+# Runtime data and credentials, including custom data directories
+.runtime/
+.codex-squire/
+.env
+.env.*
+!.env.example
+!.env.*.example
+admin.token
+gateway.token
+master.key
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Backend build outputs and caches
+backend/.gradle/
+backend/build/
+
+# Frontend dependencies, build outputs and test reports
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
+frontend/*.tsbuildinfo
+
+# Logs, JVM diagnostics and OS metadata
+*.log
+*.hprof
+hs_err_pid*
+.DS_Store
+Thumbs.db
+Desktop.ini
