@@ -4,7 +4,7 @@
 
 参考 OOP 设计原则和 Alibaba P3C 的可读性、封装、异常处理、资源关闭和并发约束，不宣称完整通过所有 P3C 规则认证。
 
-- Java 17 record 表达不可变实体和 DTO；业务命名明确，常量/成员/方法命名受 Checkstyle 检查。
+- Java 17 record 表达实体和 DTO；集合仍需防御性复制才能保证深度不可变。业务命名明确，常量/成员/方法命名受 Checkstyle 检查。
 - 构造器注入；无字段注入、全局 Service Locator 或静态数据库连接。
 - JDBC 参数化 SQL，短写事务、try-with-resources 关闭连接和语句。
 - Controller 负责 HTTP 映射，路由编排在 GatewayService，SQL 在领域 Repository。
@@ -14,6 +14,41 @@
 - TypeScript strict + noUnusedLocals/noUnusedParameters，API 响应类型显式定义。
 - 编辑状态局限在对应表单，公共 UI 组件仅抽取 Modal、表单、复制、图标按钮等真实重复行为。
 - 交互提供 loading、失败反馈、确认删除、空数据、不可执行状态和键盘焦点。
+
+## 仓库约定
+
+- `.gitattributes` 将文本规范为 LF，Windows `.bat` / `.cmd` 使用 CRLF；二进制资源不做换行转换。`.editorconfig` 定义 UTF-8、缩进和结尾换行。
+- 提交 Gradle Wrapper（包括 wrapper JAR）、`gradle.lockfile`、`pnpm-lock.yaml`、配置 sample 和测试源码；`backend/gradlew` 保留可执行位。
+- `.gitignore` 排除依赖、构建目录、运行数据、数据库及其 WAL/SHM、密钥/令牌、日志、Playwright 报告和 JVM dump。
+- 根 `.env`、`.env.local` 等本机配置不提交；`.env.example` 与 `.env.*.example` 允许提交。新增配置键要同时更新 sample、共享校验和 [配置文档](configuration.md)。
+- 不在 sample、截图、提交信息或测试输出中放实际 Provider Key、管理令牌或网关令牌。忽略规则不能替代对已暂存内容的检查。
+- 提交前执行 `git diff --check`；暂存后用 `git diff --cached --check` 和 `git diff --cached --stat` 核对范围，不把本机 `.runtime` 探针作为唯一可复现测试证据。
+
+## 本机验证入口
+
+先复制并编辑 `.env.example` 为 `.env`，从项目根目录在 PowerShell 7 中执行：
+
+```powershell
+. .\scripts\Environment.ps1
+$configuration = Read-SquireEnvironment -Path .env -ProjectRoot (Get-Location).Path
+$null = Initialize-SquireJava $configuration
+Initialize-SquireNode $configuration
+.\scripts\tests\Environment.Tests.ps1
+
+Push-Location backend
+try { .\gradlew.bat check bootJar --offline --console=plain } finally { Pop-Location }
+
+Push-Location frontend
+try {
+    pnpm install --frozen-lockfile
+    pnpm build
+    pnpm test:e2e
+} finally { Pop-Location }
+```
+
+首次无 Gradle 缓存时去掉 `--offline`。E2E 使用当前 `JAVA_HOME` 和构建目录唯一的可执行 JAR，不再硬编码开发机 JDK 路径；使用独立临时数据和固定测试端口 8798/5188，不读取本机 Provider 凭据。运行前安装 Chrome 和可用的 Codex CLI，并确保测试端口空闲；修改了 JAR 版本而留下多个产物时先执行 `clean bootJar`。
+
+`Environment.Tests.ps1` 不依赖 Pester，覆盖配置缺失、必填值、未知/重复键、引号、包含空格/等号的路径、项目根目录解析、非法端口、同端口、超时关系、字面值不执行、端口占用，以及两个真实入口缺少配置时的非零退出。使用临时文件和临时本机监听端口，不修改本机 `.env` 或运行数据。
 
 ## 自动检查
 
@@ -31,7 +66,7 @@
 | SSE | 嵌套 response.usage、UTF-8 分包、CRLF、多行 data、超大事件后继续结算 |
 | 用量可信度 | 忽略负数/无效/中间 usage；缓存不重复加总；无完成事件标记未完成 |
 | 重试边界 | 429 转移；400/503 不重放；重定向拒绝 |
-| 限额 | 请求日限额、Token 预留不足、32 并发原子争抢、跨 UTC 日期 |
+| 限额 | 请求日限额、Token 预留不足、16 线程执行 32 个争抢任务、跨 UTC 日期 |
 | 生命周期 | 取消释放并发但保留未知占额；重复结算幂等 |
 | 持久化 | 加密随机 nonce、密钥重启可解密、活动方案持久化、未完成请求恢复 |
 | 实例隔离 | 同一数据目录拒绝第二个后端拥有者 |
@@ -39,6 +74,8 @@
 | 配置一致性 | API Key 留空保留、引用约束、成员更新失败事务回滚 |
 
 测试使用 JDK/Netty 本机模拟服务和独立临时 SQLite 文件，不要求真实 Key，不调用付费 API。时区/跨日场景使用可注入 Clock，不依赖机器当前日期。
+
+该矩阵包含单元和集成层级：超大事件、多行 data 在 UsageInspector 单元测试中覆盖，不能描述为这些场景都经过完整 HTTP 链路。当前加权集成测试只验证所有来源可用的 2:1；取消集成测试主要验证部分流取消后的释放，不覆盖 completed 后再取消。测试通过不表示 [已知问题](known-issues.md) 已修复。
 
 ## 浏览器闭环
 
@@ -66,4 +103,12 @@ Playwright 使用真实后端，覆盖：登录、创建两个来源、限额字
 
 ## 演进顺序
 
-优先补真实上游兼容回归和会话亲和，再加入会话/提示词领域；之后实现 Tauri 生命周期和系统密钥库。只有有足够延迟/错误率数据时再引入自适应负载均衡或熔断，避免第一版用不可靠的健康估计影响路由。
+统一以 [已知问题与开发顺序](known-issues.md) 为准：先解决路由公平性、终态与错误分类、数据库迁移和密钥恢复，再增加限额/诊断、会话与提示词能力，最后落实 Tauri 生命周期。文档里的目标设计不能替代实现和回归证据。
+
+## 验证记录
+
+2026-09-11：初版提交 `8843388` 的业务实现已通过 22 项后端测试、Checkstyle、前端构建及 2 项 E2E（含 Codex CLI），测试在提交前执行，随后仅整理仓库规则与文件末尾空行。2026-09-10 的官方参考页面读取遇到 TLS 连接失败，此记录只说明当时证据限制，不是当前网络状态或协议兼容性结论。
+
+共享环境配置改动基于 `d9fa2b9` 之后的工作区，按用户要求尚未提交；验证结果应与此工作区对应，不归因于归档文档的提交。环境为 Windows、GraalVM JDK 17.0.9、Node.js 24.20.0、pnpm 12.3.4。没有使用真实付费上游，也没有进行长期压测或桌面打包验收。
+
+本轮验证：15 项环境/启动检查、22 项后端测试、Checkstyle、前端构建和 2 项 Playwright E2E 全部通过，CLI 版本为 0.153.4。两个独立脚本从项目目录外调用后成功加载根 `.env`；本机网页/后端实际启动，管理代理、数据目录、无令牌 401、非允许 Origin 403、经网页代理到网关的无效请求 400 均已核验，未发送付费请求。

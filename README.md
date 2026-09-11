@@ -18,7 +18,7 @@
 
 | 项目 | 版本 / 路径 |
 | --- | --- |
-| Java | 17；默认 `C:\SDK\Java\17\graalvm-jdk-17.0.9` |
+| Java | JDK 17；在 `.env` 的 `JAVA_HOME` 中配置安装路径 |
 | Spring Boot | 3.5.16 |
 | SQLite JDBC | 3.53.4.0 |
 | Gradle | Wrapper 8.10.2，附下载 SHA-256 校验 |
@@ -26,42 +26,50 @@
 | pnpm | 11+；锁定工具版本 12.3.4 |
 | React / TypeScript | 18.3.1 / 5.7.2 |
 | Vite | 6.4.3 |
-| Shell | Windows PowerShell 7 |
+| Shell | Windows 上的 PowerShell 7 |
 
 依赖版本已固定。后端提交 `gradle.lockfile`，前端提交 `pnpm-lock.yaml`。初次启动需要下载依赖；本地缓存完整时后端可传 `-Offline`。
 
-## 启动
+## 配置与启动
 
-在两个终端中分别执行：
+克隆仓库后，先在项目根目录创建本机配置：
+
+```powershell
+git clone https://github.com/allenwu258/codex-squire.git
+cd codex-squire
+Copy-Item .env.example .env
+```
+
+编辑 `.env`：必须填写本机 JDK 17 的 `JAVA_HOME`，并确认端口和 `SQUIRE_DATA_DIR`。可选 `SQUIRE_NODE_HOME` 指向 Node.js/pnpm 所在目录，留空则使用 PATH。`.env` 不提交，仓库只保留 [.env.example](.env.example)。缺少文件、必填值或配置不合法时，脚本会报错提示配置，不会自动套用另一套环境。
+
+两个终端都进入同一个项目根目录，先启动后端，再启动网页：
 
 ```powershell
 # 终端 1：编译并启动后端
-cd D:\Projects\codex-squire
 .\start-backend.ps1
 
 # 终端 2：安装依赖并启动网页
-cd D:\Projects\codex-squire
 .\start-web.ps1
 ```
 
-默认地址：后端 `http://127.0.0.1:8787`，网页 `http://127.0.0.1:5173`。端口占用时脚本选择后续空闲端口，以控制台输出为准。后端端口变化时，网页脚本传 `-BackendUrl http://127.0.0.1:实际端口`。
+sample 端口对应后端 `http://127.0.0.1:8787`、网页 `http://127.0.0.1:5173`。脚本从同一份文件推导后端代理地址及网页 Origin，不再自动更换被占用的端口。修改端口后请重启两端。网页启动前最多等待约 15 秒检查后端健康状态。
 
-默认允许网页来源 `localhost` / `127.0.0.1` 的 5173、5174 端口。其他网页端口需要在后端启动时显式传入来源，例如：
+使用另一份环境文件时，两端传相同的 `-EnvFile`：
 
 ```powershell
-.\start-backend.ps1 -Port 8789 -AllowedOrigins 'http://127.0.0.1:5180'
-.\start-web.ps1 -Port 5180 -BackendUrl http://127.0.0.1:8789
+.\start-backend.ps1 -EnvFile .env.local
+.\start-web.ps1 -EnvFile .env.local
 ```
 
 脚本不会启动另一个端，也不会结束占用端口的其他进程。按所在终端的 Ctrl+C 停止对应服务。已编译后可使用 `start-backend.ps1 -SkipBuild`，依赖已安装后可使用 `start-web.ps1 -SkipInstall`。
 
-首次登录需要管理令牌，启动后在本机读取：
+首次登录需要管理令牌，文件位于 `.env` 指定的 `SQUIRE_DATA_DIR` 下，后端控制台会打印完整路径。sample 使用 `.runtime/data`，可这样读取：
 
 ```powershell
-Get-Content "$env:USERPROFILE\.codex-squire\admin.token"
+Get-Content .runtime/data/admin.token
 ```
 
-默认数据目录是 `%USERPROFILE%\.codex-squire`。可用 `-DataDir` 指定另一个目录；令牌文件也位于该目录。**不要使用归档旧版的 `.codex-manager` 数据目录，两版数据库结构不兼容。**
+相对数据目录始终相对于项目根目录解析，也可指定绝对路径以继续使用已有数据。数据库、管理令牌、网关令牌和 `master.key` 必须作为一组保留，不要将不兼容应用的数据目录直接用于本项目。完整参数、配置语法及故障排查见 [环境与运行配置](docs/configuration.md)。
 
 ## 完整使用流程
 
@@ -87,7 +95,8 @@ supports_websockets = false
 ```
 
 ```powershell
-$env:SQUIRE_GATEWAY_KEY = Get-Content "$env:USERPROFILE\.codex-squire\gateway.token"
+# 路径按实际 SQUIRE_DATA_DIR 调整；此处使用 sample 的目录。
+$env:SQUIRE_GATEWAY_KEY = (Get-Content .runtime/data/gateway.token -Raw).Trim()
 codex
 ```
 
@@ -99,7 +108,7 @@ codex
 - 每个上游尝试消耗一次本地请求额度，包括上游拒绝。一个网关请求发生故障转移时可能对应多个尝试。
 - 准入先原子检查并发、请求额度和 Token 额度，再在 SQLite 中预留单次 Token；不会让并发请求绕过同一份预留额度。
 - 上游报告 usage 后用实际 `input_tokens + output_tokens` 替换预留。缓存输入包含在输入中，不重复累计。
-- 取消、网络异常、异常重启或缺失 usage 时保留预留占额，标记 `RESERVED`；实际输入/输出统计只计 `REPORTED` 数据。
+- 请求状态与用量口径独立。已采集可信 usage 时，即使随后取消也按真实用量结算为 `REPORTED`；未采集到 usage 且不是已识别的 4xx 拒绝时保留预留占额，标记 `RESERVED`。识别为 4xx 拒绝且无已采集 usage 时为 `NOT_APPLICABLE`、Token 占额为零。触发换源的 429 响应体当前不会解析 usage。
 - **Token 上限是本地准入预算，不是上游硬计费上限。** 若实际用量超过预留，最终占额可以超过日限额，后续请求会被拒绝。远端是否继续生成也不由断开本地连接保证。
 - 默认仅对明确的 **429** 在尚未转发响应前尝试下一个来源。400/401/403/5xx、连接异常、SSE 中断不自动重放。3xx 不跟随，防止向其他地址转发密钥。
 - 按序模式会跳过本地禁用/限额满的来源；均衡模式按权重确定首选，再按方案顺序尝试余下可用来源。每个来源在一次网关请求中最多尝试一次。
@@ -107,8 +116,11 @@ codex
 ## 验证
 
 ```powershell
-$env:JAVA_HOME = 'C:\SDK\Java\17\graalvm-jdk-17.0.9'
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+. .\scripts\Environment.ps1
+$configuration = Read-SquireEnvironment -Path .env -ProjectRoot (Get-Location).Path
+$null = Initialize-SquireJava $configuration
+Initialize-SquireNode $configuration
+.\scripts\tests\Environment.Tests.ps1
 cd backend
 .\gradlew.bat check bootJar
 
@@ -118,7 +130,7 @@ pnpm build
 pnpm test:e2e
 ```
 
-端到端测试使用已安装的 Chrome 和 PATH 中的 Codex CLI，并自动启动独立后端/网页，使用 8798 / 5188 端口及 `.runtime/e2e-*` 临时数据。测试上游由测试进程在本机随机端口模拟，**不会调用付费 API**。已验证 Codex CLI 0.153.4 能通过网关完成 SSE 回合并结算用量；CLI 测试使用 ephemeral 模式和命令行配置覆盖，不修改用户 Codex 配置。
+端到端测试使用已安装的 Chrome、PATH 中的 Codex CLI 和已加载的 `JAVA_HOME`，自动启动独立后端/网页，固定使用 8798 / 5188 端口及 `.runtime/e2e-*` 临时数据。这两个测试端口应与本机服务端口错开。测试上游在本机随机端口模拟，**不会调用付费 API**。CLI 测试使用 ephemeral 模式和临时配置，不修改用户 Codex 配置。验证范围与日期见 [工程规范与验证](docs/engineering.md)。
 
 后端报告：`backend/build/reports/tests/test/index.html`。浏览器截图：`frontend/test-results/`。
 
@@ -128,4 +140,6 @@ pnpm test:e2e
 
 管理令牌保存在网页当前标签页的 `sessionStorage`，退出即清除；不会把上游 API Key 回显到网页。此版本定位单用户本地运行，不直接作为公网多人服务。
 
-详细设计见 [架构说明](docs/architecture.md)、[接口说明](docs/api.md)、[工程规范与验证](docs/engineering.md)。
+当前加权调度在来源不可用时可能偏斜，完成后取消也存在状态分类限制；详情及修复顺序见 [已知问题与开发顺序](docs/known-issues.md)。
+
+详细设计见 [架构说明](docs/architecture.md)、[接口说明](docs/api.md)、[环境与运行配置](docs/configuration.md)、[工程规范与验证](docs/engineering.md)。

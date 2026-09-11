@@ -4,7 +4,7 @@
 
 业务核心是「选择一个可用的 API Key 来源，为本地 Codex 转发一次 Responses 请求，并可信地结算本次请求的用量」。Provider、路由方案和使用记录互相独立，未来的会话管理、提示词管理以新领域模块加入。
 
-这是新实现，未迁移或修改 `D:\Projects\codex-squire`，也未复用其数据库。参考 `D:\Projects\github-cloned\Codex-Manager` 的 service / web / desktop 职责划分，而不复刻其 OAuth、RPC 分发、多协议适配和桌面桥接复杂度。
+本仓库是 Codex Squire 当前主线，独立实现 Provider 网关，没有直接复用其他实现的数据库结构。设计参考 Codex-Manager 的 service / web / desktop 职责划分，而不复刻其 OAuth、RPC 分发、多协议适配和桌面桥接复杂度。下列参考路径属于外部参考项目，不是本仓库文件。
 
 参考项目的关键阅读入口：
 
@@ -34,6 +34,8 @@ flowchart LR
 
 开发和本地使用时网页通过 Vite 同源代理访问后端，后端和网页都只监听回环地址。网关流量直接进入后端，不需要网页进程在线。
 
+两个独立启动脚本共用根目录 `.env`，通过 `scripts/Environment.ps1` 校验配置。配置文件缺失或未填写时终止；端口冲突不自动递增。网页代理与后端 Origin 由同一组端口推导，网页启动时检查后端健康状态。环境文件是脚本层输入，Spring Boot/Vite 本身不会自动读取根文件，详见 [环境与运行配置](configuration.md)。
+
 ## 3. 模块和依赖方向
 
 | 包 / 目录 | 职责 |
@@ -44,12 +46,12 @@ flowchart LR
 | `gateway` | 路由候选、上游生命周期、原始数据流转发、增量解析 |
 | `usage` | 原子准入、占额、幂等结算、统计和日志查询 |
 | `security` | 管理/网关鉴权、Origin 约束、凭据加解密 |
-| `persistence` | SQLite 连接配置、事务、进程锁和 schema 迁移 |
+| `persistence` | SQLite 连接配置、事务、进程锁、V1 初始化与版本检查 |
 | `config` | 有界 JDBC 调度器与 UTC 时钟 |
 | `frontend/src/features` | 按领域拆分的页面与编辑器 |
 | `frontend/src/api.ts` | 类型化 API 客户端与统一异常映射 |
 
-`api -> 业务组件 -> persistence` 为主要调用方向。实体与输入对象使用不可变 record，服务采用构造器注入。未引入为单一实现服务的空接口、万能 BaseService 或大型框架包装。
+`api -> 业务组件 -> persistence` 为主要调用方向。实体与输入对象使用 record，服务采用构造器注入；record 本身不保证其集合成员深度不可变。当前 Provider/Scheme/Attempt Repository 也承担部分业务校验、准入与结算，并非严格独立的 Service/Repository 分层。后续随着规则复杂度提高拆出 AdmissionService、OutcomeResolver 等职责，不为单一实现创建空接口或万能 BaseService。
 
 SQLite JDBC 是阻塞驱动，**不是伪装成 R2DBC**。所有请求期间的 JDBC 操作显式放在名为 `sqlite` 的有界调度器：4 线程，每线程最多排队 1024 项。WebFlux/Netty 负责网络 I/O 和流转发。短期阻塞事务只用于配置写入、准入和结算，不持有整个模型响应期间的数据库锁。
 
@@ -84,6 +86,8 @@ SQLite 部分唯一索引约束 `active = 1` 的行最多一条。激活先撤�
 
 权重 2:1 的两个持续可用来源在每三个首选请求中分别获得 2 和 1 次。该策略平衡请求数量，不估测模型延迟、吞吐或金额；当前轮询序号是进程内状态，重启不保留。方案切换影响新请求，进行中的请求继续使用已选来源。
 
+当前权重在过滤不可用成员前计算，因此不可用来源的权重会被后续候选承接，不能保证剩余可用来源仍按权重公平分配；所有方案还共用一个进程内序号。此限制尚未修复，见 [K01](known-issues.md)。
+
 默认不为 5xx 和连接异常自动重放，因为无法确认上游是否已经开始执行。失败次数不会被当作健康探测结果，也没有隐藏的付费周期探测。
 
 ## 6. 请求生命周期
@@ -107,6 +111,8 @@ stateDiagram-v2
 
 下游已提交之后的网络错误只能导致流结束或断开，不能重新构造一个普通 JSON 错误响应。实际 HTTP 状态可能已是 200；应结合日志中的最终状态检查。
 
+上图表示当前单一 attempt 状态，不区分上游执行结果与客户端交付结果。completed 后取消会覆盖为 CANCELLED，但已采集 usage 仍可按真实值结算；重定向拒绝的具体分类也会被异常清理覆盖。后续应分别记录这两个结果维度，不能把当前 CANCELLED 等同于上游未完成或未计费。
+
 ## 7. SSE 与 Token 统计
 
 网络转发不重编码 JSON、不拼接完整 SSE 流。每个 DataBuffer 的原始字节向下游转发，并即时 flush，以保持交互延迟和取消传播。
@@ -121,7 +127,7 @@ UsageInspector 只观察数据：
 - 非流式观察上限 8 MiB；不截断转发。解析不到可信 usage 时保留预留口径。
 - 忽略 `[DONE]`、格式错误、负数和中间事件的临时 usage。
 
-`REPORTED` 表示上游实际报告；`RESERVED` 表示未知用量按配置占额；`NOT_APPLICABLE` 表示 4xx 拒绝无需 Token 占额。4xx 若携带可信 usage 则仍优先采用实际值。
+`REPORTED` 表示已经采集的上游报告值；`RESERVED` 表示缺少可信用量且未按拒绝归零，按配置保留占额；`NOT_APPLICABLE` 表示实现识别为 4xx 拒绝且没有已采集 usage，本地 Token 占额为零，不是供应商账单确认。普通透传分支优先采用已采集 usage；触发换源的 429 直接释放响应体，不会解析其中的 usage。
 
 ## 8. 限额一致性
 
@@ -129,7 +135,7 @@ UsageInspector 只观察数据：
 
 `可准入 = enabled && inFlight < maxConcurrency && requests < requestLimit && charged + reservation <= tokenLimit`，其中 `0` 上限跳过对应检查。
 
-结算不扣除请求次数；实际 usage 替换 charged_tokens。超出预留时如实结算而不是截断数字。Unknown 或取消记录保留预留，避免通过断开连接来释放全部 Token 预算。
+结算不扣除请求次数；实际 usage 替换 charged_tokens。超出预留时如实结算而不是截断数字。取消/异常不自动丢弃已采集 usage；只有缺少可信用量且不能按已识别拒绝归零时才保留预留。状态与 usageState 必须分别解读。
 
 此机制不能从远端预知最终 Token。它防止本地预留额度被并发超卖，但不保证上游账单绝不超过日预算；需要硬费用上限时，应同时使用来源服务商侧的硬限额。
 
@@ -140,16 +146,18 @@ UsageInspector 只观察数据：
 - Linux/macOS 权限为目录 700、密钥 600；Windows 通过 ACL 限制为当前文件所有者并为数据目录设置继承。
 - 两个不同令牌保护管理和代理接口；Origin 必须匹配显式本地允许列表。禁用基于 Cookie 的隐式鉴权。
 - 后端仅监听 `127.0.0.1`，不跟随上游重定向，不透传入站 Authorization/Cookie。
-- 网络连接超时 10 秒、上游读空闲超时 120 秒、总尝试时间 1800 秒；请求体最大 8 MiB。
+- 网络连接超时固定 10 秒；上游读空闲超时与单次尝试总超时由共享配置设置，sample 为 120/1800 秒，不是整个多来源请求的共同 deadline；请求体最大 8 MiB。
 - 每个数据目录有一个进程锁，防止两个后端同时恢复、结算同一份数据。所有连接设置 foreign_keys 和 busy_timeout，数据库启用 WAL。
 
 密钥文件和数据库在同一用户权限边界内，加密不能保护已经能够读取整个目录的攻击者。此版本不是多用户 RBAC、远程认证网关或企业密钥托管系统。
 
 备份时先停止后端，再备份整个数据目录，包括 `master.key`。仅备份 `squire.db` 无法解密来源密钥；运行中直接复制单个 DB 文件也可能遗漏 WAL。恢复时使用同一应用版本或兼容的后续版本。不要手动删除主密钥来“重置”来源。
 
+当前 schema 只有 V1 SQL 和 `PRAGMA user_version`，尚无增量迁移历史或校验和；现有加密数据库缺少主密钥时也没有完整的启动保护。这两项是继续扩展业务前的数据可靠性工作，详见 [K04/K05](known-issues.md)。
+
 ## 10. Tauri 与后续模块
 
-未来 Tauri 只负责窗口、托盘、单实例、后端进程生命周期和受控的凭据获取。Java 后端继续拥有 Provider、路由、额度和 SQLite。前端通过 `ApiClient` 增加桌面传输适配，不能在组件内散落 `invoke` 和绝对端口。
+未来 Tauri 只负责窗口、托盘、单实例、后端进程生命周期和受控的凭据获取。Java 后端继续拥有 Provider、路由、额度和 SQLite。当前管理接口使用 ApiClient，但 Connection 组件的网关测试仍直接 fetch；桌面阶段需先统一两条调用路径的 transport。打包页面没有 Vite 代理，不能仅将 dist 放入 Tauri 就视为完成。
 
 桌面打包前需要解决：JRE 裁剪或打包、Java 子进程退出回收、后端就绪握手、动态端口发现、Tauri origin/CSP、系统凭据库和升级迁移。本版没有声称这些已经实现。
 
@@ -162,4 +170,4 @@ UsageInspector 只观察数据：
 - <https://developers.openai.com/codex/config-reference/>
 - <https://platform.openai.com/docs/api-reference/responses-streaming/response/completed>
 
-本次按 OpenAI Docs 工作流尝试抓取官方页面时，官方域名 TLS 连接失败，因此没有把未读取的页面当成实时文档证据。当前配置字段和事件形态由兼容性实现、参考项目及本地自动化测试支撑。尚未用用户真实 Provider 的 Key 调用付费 API；第三方来源的字段兼容性仍应通过页面连通测试核验。
+这些链接是协议参考入口，不表示已对最新远端文档逐条验证。当前配置字段和事件形态由实现及本地自动化测试支撑；官方页面访问与测试环境的历史限制记录在 [工程验证说明](engineering.md)。没有使用真实 Provider Key 调用付费 API，第三方来源兼容性仍需单独验证。当前问题与后续优先级以 [已知问题与开发顺序](known-issues.md) 为准。

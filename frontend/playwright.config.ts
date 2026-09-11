@@ -1,7 +1,13 @@
 import { defineConfig } from '@playwright/test';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const root = path.resolve('..');
+const javaHome = process.env.JAVA_HOME;
+if (!javaHome) throw new Error('Set JAVA_HOME from the shared environment configuration before running E2E tests; see docs/engineering.md.');
+const libraries = path.join(root, 'backend', 'build', 'libs');
+const jars = fs.readdirSync(libraries).filter(name => name.startsWith('codex-squire-') && name.endsWith('.jar') && !name.endsWith('-plain.jar'));
+if (jars.length !== 1) throw new Error('Run Gradle clean bootJar before E2E tests; exactly one executable JAR is required.');
 const data = process.env.SQUIRE_E2E_DATA ?? path.join(root, '.runtime', `e2e-${Date.now()}`);
 process.env.SQUIRE_E2E_DATA = data;
 
@@ -22,7 +28,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: '"C:\\SDK\\Java\\17\\graalvm-jdk-17.0.9\\bin\\java.exe" -Dfile.encoding=UTF-8 -jar backend/build/libs/codex-squire-0.1.0.jar',
+      command: `"${path.join(javaHome, 'bin', 'java.exe')}" -Dfile.encoding=UTF-8 -jar "${path.join(libraries, jars[0])}"`,
       cwd: root,
       url: 'http://127.0.0.1:8798/api/health',
       timeout: 60000,
