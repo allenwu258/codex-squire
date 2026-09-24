@@ -160,7 +160,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(5);
+            assertThat(migrationCount).isEqualTo(6);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");

@@ -192,6 +192,27 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    void probesResponsesAndPersistsProviderCapabilities() {
+        MODES.put("a", "sse");
+        String id = provider("a", 0, 0, 4);
+        admin.post().uri("/api/providers/" + id + "/probe?model=test-model").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.supportsResponses").isEqualTo(true)
+                .jsonPath("$.supportsSse").isEqualTo(true).jsonPath("$.usageSupport").isEqualTo("REPORTED");
+        admin.get().uri("/api/providers/" + id + "/capabilities").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$[0].model").isEqualTo("test-model");
+        assertThat(CALLS.get("a").get()).isEqualTo(2);
+        int attempts = database.read(connection -> {
+            try (var statement = connection.prepareStatement("SELECT COUNT(*) FROM attempts")) {
+                try (var result = statement.executeQuery()) {
+                    result.next();
+                    return result.getInt(1);
+                }
+            }
+        });
+        assertThat(attempts).isZero();
+    }
+
+    @Test
     void enforcesDailyRequestLimitAndSkipsLimitedProvider() {
         scheme("ORDERED", List.of(provider("a", 1, 0, 4), provider("b", 0, 0, 4)));
         response(false).expectStatus().isOk();

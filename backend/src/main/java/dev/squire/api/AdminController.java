@@ -5,6 +5,9 @@ import dev.squire.provider.ProviderInput;
 import dev.squire.provider.ProviderRepository;
 import dev.squire.provider.ProviderRuntimeRepository;
 import dev.squire.provider.ProviderRuntimeState;
+import dev.squire.provider.CapabilityRepository;
+import dev.squire.provider.ProviderCapability;
+import dev.squire.provider.ProviderProbeService;
 import dev.squire.persistence.Database;
 import dev.squire.scheme.Scheme;
 import dev.squire.scheme.SchemeInput;
@@ -42,12 +45,15 @@ public class AdminController {
     private final Database database;
     private final ProviderRuntimeRepository runtime;
     private final QuotaRuleRepository quotaRules;
+    private final CapabilityRepository capabilities;
+    private final ProviderProbeService probes;
     private final LocalSecrets secrets;
     private final Scheduler scheduler;
     private final String dataDirectory;
 
     public AdminController(ProviderRepository providers, SchemeRepository schemes, AttemptRepository attempts,
-                           Database database, LocalSecrets secrets, Scheduler databaseScheduler,
+                           Database database, LocalSecrets secrets, CapabilityRepository capabilities,
+                           ProviderProbeService probes, Scheduler databaseScheduler,
                            @Value("${squire.data-dir}") String dataDirectory) {
         this.providers = providers;
         this.schemes = schemes;
@@ -55,6 +61,8 @@ public class AdminController {
         this.database = database;
         runtime = new ProviderRuntimeRepository();
         quotaRules = new QuotaRuleRepository(database);
+        this.capabilities = capabilities;
+        this.probes = probes;
         this.secrets = secrets;
         scheduler = databaseScheduler;
         this.dataDirectory = dataDirectory;
@@ -95,6 +103,17 @@ public class AdminController {
     @PutMapping("/providers/{id}/quota-rules")
     public Mono<List<QuotaRule>> saveQuotaRules(@PathVariable String id, @Valid @RequestBody List<QuotaRuleInput> input) {
         return Mono.fromCallable(() -> quotaRules.save(id, input)).subscribeOn(scheduler);
+    }
+
+    @GetMapping("/providers/{id}/capabilities")
+    public Mono<List<ProviderCapability>> capabilities(@PathVariable String id) {
+        return Mono.fromCallable(() -> capabilities.list(id)).subscribeOn(scheduler);
+    }
+
+    @PostMapping("/providers/{id}/probe")
+    public Mono<ProviderProbeService.ProbeResult> probe(@PathVariable String id,
+                                                        @RequestParam String model) {
+        return probes.probe(id, model).subscribeOn(scheduler);
     }
 
     @GetMapping("/schemes")
