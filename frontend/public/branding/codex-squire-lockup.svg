@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 800" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 660" role="img" aria-labelledby="title desc">
   <title id="title">Codex Squire lockup</title>
   <desc id="desc">The supplied shield and scroll symbol with the Codex Squire wordmark.</desc>
+  <rect width="1500" height="660" fill="#ffffff"/>
   <g transform="translate(0 0) scale(.78)">
 
   <defs>
