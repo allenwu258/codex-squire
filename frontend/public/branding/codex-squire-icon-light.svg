@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 920" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Squire shield and scroll light icon</title>
+  <desc id="desc">The supplied shield and scroll artwork on a light tile.</desc>
+  <rect width="920" height="920" rx="170" fill="#f4f6f8"/>
+  <g transform="translate(0 60)">
+
+  <defs>
+    <linearGradient id="gShieldR" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fafafa"/><stop offset=".4" stop-color="#a6a6a6"/>
+      <stop offset=".75" stop-color="#e0e0e0"/><stop offset="1" stop-color="#8c8c8c"/>
+    </linearGradient>
+    <linearGradient id="gInnerL" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9c9c9c"/><stop offset=".45" stop-color="#f5f5f5"/>
+      <stop offset="1" stop-color="#9c9c9c"/>
+    </linearGradient>
+    <linearGradient id="gInnerR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f5f5f5"/><stop offset="1" stop-color="#8c8c8c"/>
+    </linearGradient>
+    <linearGradient id="gCyl" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8c8c8c"/><stop offset=".28" stop-color="#ececec"/>
+      <stop offset=".5" stop-color="#ffffff"/><stop offset=".78" stop-color="#c4c4c4"/>
+      <stop offset="1" stop-color="#8c8c8c"/>
+    </linearGradient>
+    <linearGradient id="gFold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f2f2f2"/><stop offset=".5" stop-color="#d9d9d9"/>
+      <stop offset="1" stop-color="#8c8c8c"/>
+    </linearGradient>
+    <linearGradient id="gLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#9c9c9c"/><stop offset="1" stop-color="#cfcfcf"/>
+    </linearGradient>
+    <linearGradient id="gBall" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fafafa"/><stop offset="1" stop-color="#8c8c8c"/>
+    </linearGradient>
+    <clipPath id="clipL"><rect x="0" y="0" width="460" height="800"/></clipPath>
+    <clipPath id="clipR"><rect x="460" y="0" width="460" height="800"/></clipPath>
+  </defs>
+  
+  <!-- 盾牌外环 + 内环 -->
+  <g fill-rule="evenodd">
+    <g clip-path="url(#clipR)">
+      <path fill="url(#gShieldR)" d="M460 98 L768 213 L768 400 C768 560 640 690 460 772
+        C280 690 152 560 152 400 L152 213 Z
+        M460 152 L722 244 L722 396 C722 540 610 650 460 716
+        C310 650 198 540 198 396 L198 244 Z"/>
+    </g>
+    <g clip-path="url(#clipL)">
+      <path fill="#0d2b49" d="M460 98 L768 213 L768 400 C768 560 640 690 460 772
+        C280 690 152 560 152 400 L152 213 Z
+        M460 152 L722 244 L722 396 C722 540 610 650 460 716
+        C310 650 198 540 198 396 L198 244 Z"/>
+    </g>
+    <g clip-path="url(#clipL)">
+      <path fill="url(#gInnerL)" d="M460 178 L698 262 L698 392 C698 522 585 622 460 682
+        C335 622 222 522 222 392 L222 262 Z
+        M460 200 L676 280 L676 388 C676 505 565 600 460 655
+        C355 600 244 505 244 388 L244 280 Z"/>
+    </g>
+    <g clip-path="url(#clipR)">
+      <path fill="url(#gInnerR)" d="M460 178 L698 262 L698 392 C698 522 585 622 460 682
+        C335 622 222 522 222 392 L222 262 Z
+        M460 200 L676 280 L676 388 C676 505 565 600 460 655
+        C355 600 244 505 244 388 L244 280 Z"/>
+    </g>
+  </g>
+  <!-- 卷轴 -->
+  <g stroke="#0d2b49" stroke-width="22" stroke-linejoin="round">
+    <rect x="440" y="245" width="260" height="355" fill="#f7f9fa"/>
+    <g stroke="none">
+      <rect x="480" y="296" width="180" height="18" fill="url(#gLine)"/>
+      <rect x="535" y="336" width="125" height="18" fill="#0d2b49"/>
+      <rect x="480" y="376" width="180" height="18" fill="#0d2b49"/>
+      <rect x="480" y="416" width="180" height="18" fill="#0d2b49"/>
+      <rect x="480" y="456" width="180" height="18" fill="#0d2b49"/>
+      <rect x="480" y="496" width="180" height="18" fill="#0d2b49"/>
+      <rect x="480" y="536" width="115" height="18" fill="url(#gLine)"/>
+    </g>
+    <!-- 左折边 -->
+    <path fill="url(#gFold)" d="M440 245 L402 245 Q360 245 360 287 L360 600 L440 600 Z"/>
+    <!-- 右侧竖直卷筒(底边上收,藏进球环) -->
+    <path fill="url(#gCyl)" d="M700 634 L700 210 A45 45 0 0 1 790 210 L790 634 Z"/>
+    <!-- 底部水平卷筒(左帽外凸,与折边左线平滑相接) -->
+    <path fill="#f5f7f8" d="M745 600 L389 600 A38 38 0 0 0 389 676 L745 676 Z"/>
+    <rect x="405" y="627" width="277" height="22" fill="url(#gLine)" stroke="none"/>
+    <!-- 端头圆球(略宽于柱身,吞掉柱脚硬角) -->
+    <circle cx="745" cy="638" r="48" fill="url(#gBall)"/>
+  </g>
+  </g>
+</svg>

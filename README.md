@@ -14,6 +14,10 @@
 - 独立管理令牌与网关令牌、AES-GCM 加密上游密钥、本机数据目录权限约束。
 - Codex 配置片段、密钥复制、显式触发的连通性测试。
 
+## 品牌资源
+
+新版品牌直接基于提供的盾牌书卷 SVG：盾牌表达可信的本地守护，卷轴表达 Codex 的提示词、配置和知识。原始母版保存在 [codex-squire-master.svg](frontend/public/branding/codex-squire-master.svg)，完整的深浅背景、单色、小尺寸和文字锁定组合位于 [frontend/public/branding](frontend/public/branding)，使用规范见其中的 [README](frontend/public/branding/README.md)，预览板为 [codex-squire-preview.svg](frontend/public/branding/codex-squire-preview.svg)。
+
 ## 环境
 
 | 项目 | 版本 / 路径 |

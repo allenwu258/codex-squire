@@ -53,7 +53,7 @@ export default function App() {
   function logout() { sessionStorage.removeItem(TOKEN_KEY); setToken(''); setData(null); setError(''); }
   if (!token) return <Login onConnect={value => { sessionStorage.setItem(TOKEN_KEY, value); setToken(value); }} />;
   const activePage = navigation.find(item => item.id === page) ?? navigation[0];
-  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#overview" onClick={() => navigate('overview')}><img src="/squire.svg" alt="" /><span>Codex Squire</span></a>
+  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#overview" onClick={() => navigate('overview')}><img src="/branding/codex-squire-icon-light.svg" alt="" /><span>Codex Squire</span></a>
     <div className="nav-caption">工作空间</div><nav aria-label="主导航">{navigation.map(item => <button key={item.id} aria-current={activePage.id === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><item.icon size={18} /><span>{item.name}</span>{activePage.id === item.id && <ChevronRight size={14} className="nav-chevron" />}</button>)}</nav>
     <div className="sidebar-bottom"><span className="status-dot on" />本地工作空间<span>v0.1.0</span></div></aside>
     <div className="main-shell"><header className="topbar"><span className="breadcrumb">工作空间 <ChevronRight size={13} />{activePage.name}</span><div className="topbar-actions"><Badge tone={error ? 'amber' : 'green'}>{error ? '连接异常' : data ? '服务在线' : '连接中'}</Badge><IconButton icon={busy ? LoaderCircle : RefreshCw} label="刷新" disabled={busy} onClick={() => void refresh()} /><IconButton icon={LogOut} label="退出管理" onClick={logout} /></div></header>
@@ -71,7 +71,7 @@ function Login({ onConnect }: { onConnect: (token: string) => void }) {
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  return <div className="login-page"><div className="login-brand"><img src="/squire.svg" alt="Codex Squire" /><span>Codex Squire</span></div>
+  return <div className="login-page"><div className="login-brand"><img src="/branding/codex-squire-icon.svg" alt="Codex Squire" /><span>Codex Squire</span></div>
     <form className="login-form" onSubmit={event => {
       event.preventDefault(); setBusy(true); setError('');
       void new ApiClient(token.trim()).providers().then(() => onConnect(token.trim())).catch(failure => setError(errorMessage(failure))).finally(() => setBusy(false));
