@@ -3,6 +3,9 @@ package dev.squire.api;
 import dev.squire.provider.Provider;
 import dev.squire.provider.ProviderInput;
 import dev.squire.provider.ProviderRepository;
+import dev.squire.provider.ProviderRuntimeRepository;
+import dev.squire.provider.ProviderRuntimeState;
+import dev.squire.persistence.Database;
 import dev.squire.scheme.Scheme;
 import dev.squire.scheme.SchemeInput;
 import dev.squire.scheme.SchemeRepository;
@@ -33,15 +36,20 @@ public class AdminController {
     private final ProviderRepository providers;
     private final SchemeRepository schemes;
     private final AttemptRepository attempts;
+    private final Database database;
+    private final ProviderRuntimeRepository runtime;
     private final LocalSecrets secrets;
     private final Scheduler scheduler;
     private final String dataDirectory;
 
     public AdminController(ProviderRepository providers, SchemeRepository schemes, AttemptRepository attempts,
-                           LocalSecrets secrets, Scheduler databaseScheduler, @Value("${squire.data-dir}") String dataDirectory) {
+                           Database database, LocalSecrets secrets, Scheduler databaseScheduler,
+                           @Value("${squire.data-dir}") String dataDirectory) {
         this.providers = providers;
         this.schemes = schemes;
         this.attempts = attempts;
+        this.database = database;
+        runtime = new ProviderRuntimeRepository();
         this.secrets = secrets;
         scheduler = databaseScheduler;
         this.dataDirectory = dataDirectory;
@@ -104,6 +112,11 @@ public class AdminController {
     @GetMapping("/statistics")
     public Mono<AttemptRepository.Statistics> statistics() {
         return Mono.fromCallable(attempts::statistics).subscribeOn(scheduler);
+    }
+
+    @GetMapping("/provider-runtime")
+    public Mono<List<ProviderRuntimeState>> providerRuntime() {
+        return Mono.fromCallable(() -> database.read(runtime::list)).subscribeOn(scheduler);
     }
 
     @GetMapping("/attempts")

@@ -128,6 +128,7 @@ public final class GatewayService {
             OutcomeResolver.ResponseOutcome outcome = outcomes.rateLimited();
             context.status = outcome.status();
             context.upstreamOutcome = outcome.upstreamOutcome();
+            context.retryAfterSeconds = parseRetryAfter(upstream.headers().asHttpHeaders().getFirst("Retry-After"));
             return upstream.releaseBody().thenReturn(Outcome.RETRY);
         }
         if (status >= 300 && status < 400) {
@@ -197,8 +198,19 @@ public final class GatewayService {
         return Mono.fromRunnable(() -> attempts.finish(context.admission,
                         new AttemptRepository.Settlement(context.status, context.httpStatus,
                                 context.inspector == null ? null : context.inspector.usage(), context.rejected,
-                                context.upstreamOutcome, context.deliveryOutcome)))
+                                context.upstreamOutcome, context.deliveryOutcome, context.retryAfterSeconds)))
                 .subscribeOn(databaseScheduler).then();
+    }
+
+    private Long parseRetryAfter(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Math.min(3600, Math.max(1, Long.parseLong(value.trim())));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private Mono<Void> safeSettle(AttemptContext context) {
@@ -234,6 +246,7 @@ public final class GatewayService {
         private boolean rejected;
         private String upstreamOutcome = "UNKNOWN";
         private String deliveryOutcome = "PENDING";
+        private Long retryAfterSeconds;
 
         private AttemptContext(AttemptRepository.Admission admission) {
             this.admission = admission;
@@ -255,3 +268,4 @@ public final class GatewayService {
         }
     }
 }
+

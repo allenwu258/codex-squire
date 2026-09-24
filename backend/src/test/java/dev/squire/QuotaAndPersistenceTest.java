@@ -157,7 +157,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(2);
+            assertThat(migrationCount).isEqualTo(3);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
@@ -195,8 +195,36 @@ class QuotaAndPersistenceTest {
         }
     }
 
+    @Test
+    void rateLimitCreatesCooldownAndSuccessfulRecoveryClearsIt() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var admission = attempts.admit(id, "scheme", "request", "model");
+            attempts.finish(admission, new AttemptRepository.Settlement("RATE_LIMITED", 429, null, true,
+                    "REJECTED", "PENDING", 60L));
+            assertThat(attempts.admit(id, "scheme", "second", "model")).isNull();
+
+            Clock afterCooldown = Clock.fixed(Instant.parse("2026-09-11T00:02:00Z"), ZoneOffset.UTC);
+            AttemptRepository recovered = new AttemptRepository(database, providers, afterCooldown);
+            var recoveredAdmission = recovered.admit(id, "scheme", "third", "model");
+            assertThat(recoveredAdmission).isNotNull();
+            recovered.finish(recoveredAdmission, new AttemptRepository.Settlement("SUCCEEDED", 200,
+                    new Usage(2, 3, 0), false, "COMPLETED", "DELIVERED"));
+            String health = database.read(connection -> new dev.squire.provider.ProviderRuntimeRepository()
+                    .find(connection, id).health());
+            assertThat(health).isEqualTo("READY");
+        } finally {
+            database.close();
+        }
+    }
+
     private ProviderInput input(long requests, long tokens) {
         return new ProviderInput("provider", "https://api.example.com/v1", "upstream-key", true, requests, tokens, 128, 100);
     }
 }
+
 
