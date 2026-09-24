@@ -33,6 +33,7 @@ public final class GatewayService {
             "session_id", "conversation_id", "x-codex-turn-state", "x-codex-turn-metadata");
     private static final List<String> RESPONSE_HEADERS = List.of("x-request-id", "openai-processing-ms", "retry-after", "x-codex-turn-state");
     private final RoutingService routing;
+    private final OutcomeResolver outcomes;
     private final AttemptRepository attempts;
     private final LocalSecrets secrets;
     private final ObjectMapper mapper;
@@ -40,10 +41,11 @@ public final class GatewayService {
     private final WebClient client;
     private final Duration totalTimeout;
 
-    public GatewayService(RoutingService routing, AttemptRepository attempts, LocalSecrets secrets, ObjectMapper mapper,
+    public GatewayService(RoutingService routing, OutcomeResolver outcomes, AttemptRepository attempts, LocalSecrets secrets, ObjectMapper mapper,
                           Scheduler databaseScheduler, @Value("${squire.upstream-idle-seconds}") int idleSeconds,
                           @Value("${squire.upstream-total-seconds}") int totalSeconds) {
         this.routing = routing;
+        this.outcomes = outcomes;
         this.attempts = attempts;
         this.secrets = secrets;
         this.mapper = mapper;
@@ -77,9 +79,11 @@ public final class GatewayService {
             AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model);
             return admission == null ? null : new AttemptContext(admission);
         }).subscribeOn(databaseScheduler).doOnDiscard(AttemptContext.class, context ->
-                databaseScheduler.schedule(() -> attempts.finish(context.admission,
-                        new AttemptRepository.Settlement("CANCELLED", null, null, false,
-                                context.upstreamOutcome, "CLIENT_CANCELLED"))));
+                databaseScheduler.schedule(() -> {
+                    OutcomeResolver.FailureOutcome outcome = outcomes.cancelled(context.upstreamOutcome);
+                    attempts.finish(context.admission, new AttemptRepository.Settlement(outcome.status(), null, null, false,
+                            outcome.upstreamOutcome(), outcome.deliveryOutcome()));
+                }));
         return Mono.usingWhen(resource,
                 context -> send(context, body, exchange, nextAttempted.size() < route.members().size()),
                 this::settle,
@@ -116,13 +120,15 @@ public final class GatewayService {
         context.rejected = status >= 400 && status < 500;
         // Only explicit rate rejection is replayable by default. Other failures may have executed work.
         if (status == 429 && hasNext) {
-            context.status = "RATE_LIMITED";
-            context.upstreamOutcome = "REJECTED";
+            OutcomeResolver.ResponseOutcome outcome = outcomes.rateLimited();
+            context.status = outcome.status();
+            context.upstreamOutcome = outcome.upstreamOutcome();
             return upstream.releaseBody().thenReturn(Outcome.RETRY);
         }
         if (status >= 300 && status < 400) {
-            context.status = "REDIRECT_REJECTED";
-            context.upstreamOutcome = "REJECTED";
+            OutcomeResolver.ResponseOutcome outcome = outcomes.redirect();
+            context.status = outcome.status();
+            context.upstreamOutcome = outcome.upstreamOutcome();
             return upstream.releaseBody().then(Mono.error(new ApiException(502, "UPSTREAM_REDIRECT", "Upstream redirect refused")));
         }
         context.status = status >= 400 ? "UPSTREAM_ERROR" : "SUCCEEDED";
@@ -147,8 +153,9 @@ public final class GatewayService {
             context.inspector.accept(bytes);
         }).doOnComplete(() -> {
             context.inspector.end();
-            context.upstreamOutcome = upstreamOutcome(status, context.inspector.resultStatus());
-            context.status = status < 400 ? context.inspector.resultStatus() : "UPSTREAM_ERROR";
+            OutcomeResolver.ResponseOutcome outcome = outcomes.response(status, context.inspector.resultStatus());
+            context.upstreamOutcome = outcome.upstreamOutcome();
+            context.status = outcome.status();
         });
         // Flush each upstream chunk; buffering the whole Flux breaks interactive SSE delivery.
         return exchange.getResponse().writeAndFlushWith(content.map(Mono::just))
@@ -164,21 +171,19 @@ public final class GatewayService {
     }
 
     private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
-        if (context.upstreamOutcome.equals("UNKNOWN")) {
-            context.upstreamOutcome = "FAILED";
-        }
-        if (context.deliveryOutcome.equals("PENDING")) {
-            context.deliveryOutcome = "WRITE_FAILED";
-        }
-        if (context.status.equals("SUCCEEDED")) {
-            context.status = "TRANSPORT_ERROR";
-        }
+        OutcomeResolver.FailureOutcome outcome = outcomes.transport(context.status, context.upstreamOutcome,
+                !context.deliveryOutcome.equals("PENDING"));
+        context.status = outcome.status();
+        context.upstreamOutcome = outcome.upstreamOutcome();
+        context.deliveryOutcome = outcome.deliveryOutcome();
         return settle(context);
     }
 
     private Mono<Void> settleOnCancel(AttemptContext context) {
-        context.status = "CANCELLED";
-        context.deliveryOutcome = "CLIENT_CANCELLED";
+        OutcomeResolver.FailureOutcome outcome = outcomes.cancelled(context.upstreamOutcome);
+        context.status = outcome.status();
+        context.upstreamOutcome = outcome.upstreamOutcome();
+        context.deliveryOutcome = outcome.deliveryOutcome();
         return settle(context);
     }
 
@@ -189,18 +194,6 @@ public final class GatewayService {
                                 context.inspector == null ? null : context.inspector.usage(), context.rejected,
                                 context.upstreamOutcome, context.deliveryOutcome)))
                 .subscribeOn(databaseScheduler).then();
-    }
-
-    private String upstreamOutcome(int status, String inspectorStatus) {
-        if (status >= 400) {
-            return "FAILED";
-        }
-        return switch (inspectorStatus) {
-            case "SUCCEEDED" -> "COMPLETED";
-            case "INCOMPLETE" -> "INCOMPLETE";
-            case "FAILED" -> "FAILED";
-            default -> "UNKNOWN";
-        };
     }
 
     private String validate(byte[] body) {
