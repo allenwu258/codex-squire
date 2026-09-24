@@ -202,6 +202,28 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    void rebalancesWeightsAfterDisabledProviderIsFiltered() {
+        String a = provider("a", 0, 0, 4);
+        String b = provider("b", 0, 0, 4);
+        String c = provider("c", 0, 0, 4);
+        admin.put().uri("/api/providers/" + a).bodyValue(providerInput("a", 0, 0, 4, "", false))
+                .exchange().expectStatus().isOk();
+        JsonNode result = admin.post().uri("/api/schemes").bodyValue(Map.of("name", "filtered-weighted", "strategy", "BALANCED",
+                "members", List.of(Map.of("providerId", a, "weight", 100), Map.of("providerId", b, "weight", 1),
+                        Map.of("providerId", c, "weight", 1))))
+                .exchange().expectStatus().isCreated().expectBody(JsonNode.class).returnResult().getResponseBody();
+        activate(result.path("id").asText());
+        for (int index = 0; index < 12; index++) {
+            response(false).expectStatus().isOk();
+            settled();
+        }
+        System.out.println("ROUTE_CALLS=" + CALLS);
+        assertThat(CALLS.get("a")).isNull();
+        assertThat(CALLS.get("b").get()).isEqualTo(6);
+        assertThat(CALLS.get("c").get()).isEqualTo(6);
+    }
+
+    @Test
     void incompleteStreamKeepsReservationWithoutInventingTokens() {
         MODES.put("a", "truncated");
         scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
@@ -283,8 +305,12 @@ class GatewayIntegrationTest {
     }
 
     private Map<String, Object> providerInput(String name, long requests, long tokens, int concurrency, String key) {
+        return providerInput(name, requests, tokens, concurrency, key, true);
+    }
+
+    private Map<String, Object> providerInput(String name, long requests, long tokens, int concurrency, String key, boolean enabled) {
         return Map.of("name", name, "baseUrl", "http://127.0.0.1:" + UPSTREAM.port() + "/" + name + "/v1", "apiKey", key,
-                "enabled", true, "dailyRequestLimit", requests, "dailyTokenLimit", tokens,
+                "enabled", enabled, "dailyRequestLimit", requests, "dailyTokenLimit", tokens,
                 "maxConcurrency", concurrency, "tokenReservation", 100);
     }
 
@@ -335,3 +361,4 @@ class GatewayIntegrationTest {
         }
     }
 }
+

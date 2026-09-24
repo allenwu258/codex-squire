@@ -9,7 +9,9 @@ import io.netty.channel.ChannelOption;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -58,29 +60,32 @@ public final class GatewayService {
         String requestId = UUID.randomUUID().toString();
         exchange.getResponse().getHeaders().set("x-squire-request-id", requestId);
         return Mono.fromCallable(routing::route).subscribeOn(databaseScheduler)
-                .flatMap(route -> next(route, 0, requestId, model, body, exchange)).then()
+                .flatMap(route -> next(route, Set.of(), requestId, model, body, exchange)).then()
                 .onErrorMap(error -> !(error instanceof ApiException) && !exchange.getResponse().isCommitted(),
                         error -> new ApiException(502, "UPSTREAM_FAILURE", "Upstream connection failed; the request was not replayed"));
     }
 
-    private Mono<Outcome> next(RoutingService.Route route, int position, String requestId, String model,
+    private Mono<Outcome> next(RoutingService.Route route, Set<String> attempted, String requestId, String model,
                                byte[] body, ServerWebExchange exchange) {
-        if (position >= route.candidates().size()) {
+        String providerId = routing.nextProvider(route, attempted);
+        if (providerId == null) {
             return Mono.error(new ApiException(503, "NO_AVAILABLE_PROVIDER", "All providers are disabled, limited or temporarily unavailable"));
         }
+        Set<String> nextAttempted = new HashSet<>(attempted);
+        nextAttempted.add(providerId);
         Mono<AttemptContext> resource = Mono.fromCallable(() -> {
-            AttemptRepository.Admission admission = routing.admit(route, position, requestId, model);
+            AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model);
             return admission == null ? null : new AttemptContext(admission);
         }).subscribeOn(databaseScheduler).doOnDiscard(AttemptContext.class, context ->
                 databaseScheduler.schedule(() -> attempts.finish(context.admission, "CANCELLED", null, null, false)));
         return Mono.usingWhen(resource,
-                context -> send(context, body, exchange, position + 1 < route.candidates().size()),
+                context -> send(context, body, exchange, nextAttempted.size() < route.members().size()),
                 context -> settle(context, context.status),
                 (context, error) -> settle(context, "TRANSPORT_ERROR"),
                 context -> settle(context, "CANCELLED"))
                 .defaultIfEmpty(Outcome.RETRY)
                 .flatMap(outcome -> outcome == Outcome.RETRY
-                        ? next(route, position + 1, requestId, model, body, exchange) : Mono.just(outcome));
+                        ? next(route, nextAttempted, requestId, model, body, exchange) : Mono.just(outcome));
     }
 
     private Mono<Outcome> send(AttemptContext context, byte[] body, ServerWebExchange exchange, boolean hasNext) {
