@@ -9,6 +9,7 @@ import dev.squire.scheme.SchemeRepository;
 import dev.squire.security.LocalSecrets;
 import dev.squire.usage.AttemptRepository;
 import dev.squire.usage.Usage;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
@@ -33,7 +34,7 @@ class QuotaAndPersistenceTest {
     void concurrentAdmissionsCannotOversubscribeTokens() throws Exception {
         Database database = new Database(directory.toString());
         try {
-            LocalSecrets secrets = new LocalSecrets(directory.toString());
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
             ProviderRepository providers = new ProviderRepository(database, secrets, CLOCK);
             String id = providers.save(null, input(0, 100)).id();
             AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
@@ -68,7 +69,8 @@ class QuotaAndPersistenceTest {
     void settlementIsIdempotentAndUtcDayRollsOver() throws Exception {
         Database database = new Database(directory.toString());
         try {
-            ProviderRepository providers = new ProviderRepository(database, new LocalSecrets(directory.toString()), CLOCK);
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
             String id = providers.save(null, input(1, 100)).id();
             AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
             var admission = attempts.admit(id, "scheme", "request", "model");
@@ -89,7 +91,7 @@ class QuotaAndPersistenceTest {
     @Test
     void restartPreservesCredentialsAndActiveSchemeAndRecoversInflight() throws Exception {
         Database first = new Database(directory.toString());
-        LocalSecrets secrets = new LocalSecrets(directory.toString());
+        LocalSecrets secrets = new LocalSecrets(directory.toString(), first);
         ProviderRepository providers = new ProviderRepository(first, secrets, CLOCK);
         String id;
         String schemeId;
@@ -110,7 +112,7 @@ class QuotaAndPersistenceTest {
         }
         Database reopened = new Database(directory.toString());
         try {
-            LocalSecrets restoredSecrets = new LocalSecrets(directory.toString());
+            LocalSecrets restoredSecrets = new LocalSecrets(directory.toString(), reopened);
             ProviderRepository restoredProviders = new ProviderRepository(reopened, restoredSecrets, CLOCK);
             assertThat(restoredSecrets.decrypt(restoredProviders.find(id).encryptedKey())).isEqualTo("upstream-key");
             assertThat(new SchemeRepository(reopened).active().id()).isEqualTo(schemeId);
@@ -121,6 +123,53 @@ class QuotaAndPersistenceTest {
         } finally {
             reopened.close();
         }
+    }
+
+    @Test
+    void missingMasterKeyIsRejectedWhenEncryptedCredentialsExist() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
+            ProviderRepository providers = new ProviderRepository(database, secrets, CLOCK);
+            providers.save(null, input(0, 0));
+        } finally {
+            database.close();
+        }
+        Files.delete(directory.resolve("master.key"));
+        Database reopened = new Database(directory.toString());
+        try {
+            assertThatThrownBy(() -> new LocalSecrets(directory.toString(), reopened))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Master key is missing");
+        } finally {
+            reopened.close();
+        }
+    }
+
+    @Test
+    void migrationRecordIsIdempotentAndChecksumProtected() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            int migrationCount = database.read(connection -> {
+                try (var statement = connection.prepareStatement("SELECT COUNT(*) FROM schema_migrations");
+                        var result = statement.executeQuery()) {
+                    result.next();
+                    return result.getInt(1);
+                }
+            });
+            assertThat(migrationCount).isEqualTo(1);
+            database.transaction(connection -> {
+                try (var statement = connection.createStatement()) {
+                    statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
+                }
+                return null;
+            });
+        } finally {
+            database.close();
+        }
+        assertThatThrownBy(() -> new Database(directory.toString()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("checksum mismatch");
     }
 
     private ProviderInput input(long requests, long tokens) {

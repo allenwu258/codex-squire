@@ -64,7 +64,8 @@ public final class SchemeRepository {
                 statement.setString(1, targetId);
                 statement.executeUpdate();
             }
-            try (var statement = connection.prepareStatement("INSERT INTO scheme_members VALUES(?,?,?,?)")) {
+            try (var statement = connection.prepareStatement(
+                    "INSERT INTO scheme_members(scheme_id,provider_id,position,weight) VALUES(?,?,?,?)")) {
                 for (int index = 0; index < input.members().size(); index++) {
                     SchemeInput.MemberInput member = input.members().get(index);
                     statement.setString(1, targetId);

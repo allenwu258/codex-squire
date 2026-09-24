@@ -49,4 +49,3 @@ CREATE INDEX attempts_provider_day ON attempts(provider_id, day);
 CREATE INDEX attempts_inflight ON attempts(provider_id) WHERE status = 'IN_FLIGHT';
 CREATE INDEX attempts_started ON attempts(started_at DESC);
 CREATE INDEX attempts_request ON attempts(request_id);
-PRAGMA user_version = 1;

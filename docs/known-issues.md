@@ -9,8 +9,8 @@
 | K01 | 加权算法在全部成员上分配票号，再跳过不可用来源。A/B/C 权重 100/1/1、A 不可用时，后续 B/C 可能分配为 101:1 | 按有效候选决策，同时保留原子准入；验证禁用、额度不足、恢复和方案切换后的公平性 |
 | K02 | 收到 completed 后再取消，usage 可以保留为 REPORTED，但 attempt 被记为 CANCELLED；错误清理也会覆盖已确定分类 | 分离上游结果和交付结果；覆盖终态后取消、写入中取消、未完成流等时序 |
 | K03 | 3xx 返回 502/UPSTREAM_REDIRECT，但日志状态会被异常清理覆盖为 TRANSPORT_ERROR；部分数据库/解密异常可能被映射为 UPSTREAM_FAILURE | 保留已确定业务分类，区分存储、配置、协议与网络错误 |
-| K04 | 数据库只有手写 V1 初始化与 user_version 检查，没有可升级的迁移历史和校验机制 | 采用正式迁移机制，验证现有 V1 升级、重复启动、失败恢复和备份恢复 |
-| K05 | 已有加密数据但 master.key 缺失时会生成新密钥，原凭据随后无法解密 | 检测异常状态并启动失败，建立备份、恢复和版本化密钥流程 |
+| K04 | 已建立版本化迁移器、`schema_migrations` 和 checksum，并能接管现有 V1；尚未有 V2 以上的真实增量迁移历史 | 新增持久化字段前继续补版本迁移、升级失败恢复和备份恢复测试 |
+| K05 | 已有加密凭据但 `master.key` 缺失时现在会拒绝启动；密文格式版本、密钥轮换和系统凭据库尚未实现 | 增加密文版本/keyId、轮换流程，并在桌面阶段接入系统凭据库 |
 
 证据入口：[RoutingService](../backend/src/main/java/dev/squire/gateway/RoutingService.java)、[GatewayService](../backend/src/main/java/dev/squire/gateway/GatewayService.java)、[Database](../backend/src/main/java/dev/squire/persistence/Database.java)、[LocalSecrets](../backend/src/main/java/dev/squire/security/LocalSecrets.java)。已有加权测试仅覆盖所有来源可用的 2:1 场景；已有取消集成测试没有覆盖 completed 后再取消，不能用测试通过表示 K01/K02 已消失。
 
@@ -26,7 +26,7 @@
 
 ## 开发顺序
 
-1. 修复 K01/K02/K03，补对应路由和生命周期回归测试；落实 K04/K05 的数据升级与恢复基础。
+1. 修复 K01/K02/K03，补对应路由和生命周期回归测试；在新增字段前继续扩展 K04 的版本迁移与升级测试。
 2. 增加多窗口限额、请求诊断、单来源探测、可解释的冷却和一致的统计口径。
 3. 改善配置并发编辑与前端请求管理，建立统一后端连接和进程发现机制。
 4. 在明确来源归属后加入会话/提示词领域，再封装 Tauri；桌面生命周期和密钥库单独验收。

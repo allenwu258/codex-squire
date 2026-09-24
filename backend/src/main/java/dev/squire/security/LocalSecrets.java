@@ -1,5 +1,7 @@
 package dev.squire.security;
 
+import dev.squire.api.ApiException;
+import dev.squire.persistence.Database;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,11 +32,22 @@ public final class LocalSecrets {
     private final String adminToken;
     private final String gatewayToken;
 
-    public LocalSecrets(@Value("${squire.data-dir}") String dataDirectory) throws IOException {
+    public LocalSecrets(@Value("${squire.data-dir}") String dataDirectory, Database database) throws IOException {
         Path directory = Path.of(dataDirectory).toAbsolutePath();
         Files.createDirectories(directory);
         restrict(directory);
-        masterKey = Base64.getUrlDecoder().decode(readOrCreate(directory.resolve("master.key")));
+        Path masterKeyFile = directory.resolve("master.key");
+        if (!Files.exists(masterKeyFile) && database.hasEncryptedCredentials()) {
+            throw new IllegalStateException("Master key is missing while encrypted provider credentials exist");
+        }
+        try {
+            masterKey = Base64.getUrlDecoder().decode(readOrCreate(masterKeyFile));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("Master key has an invalid format", exception);
+        }
+        if (masterKey.length != 32) {
+            throw new IllegalStateException("Master key must contain 32 bytes");
+        }
         adminToken = readOrCreate(directory.resolve("admin.token"));
         gatewayToken = readOrCreate(directory.resolve("gateway.token"));
     }
@@ -65,12 +78,16 @@ public final class LocalSecrets {
     public String decrypt(String encrypted) {
         try {
             String[] parts = encrypted.split(":", 2);
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Invalid encrypted credential format");
+            }
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(masterKey, "AES"),
                     new GCMParameterSpec(128, Base64.getDecoder().decode(parts[0])));
             return new String(cipher.doFinal(Base64.getDecoder().decode(parts[1])), StandardCharsets.UTF_8);
-        } catch (GeneralSecurityException exception) {
-            throw new IllegalStateException("Credential decryption failed", exception);
+        } catch (GeneralSecurityException | IllegalArgumentException exception) {
+            throw new ApiException(500, "CREDENTIAL_DECRYPTION_FAILED",
+                    "Stored provider credential could not be decrypted");
         }
     }
 

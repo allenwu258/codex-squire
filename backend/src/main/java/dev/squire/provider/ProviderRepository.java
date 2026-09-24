@@ -67,7 +67,9 @@ public final class ProviderRepository {
             }
             String targetId = existing == null ? UUID.randomUUID().toString() : id;
             String created = existing == null ? clock.instant().toString() : existing.createdAt();
-            try (var statement = connection.prepareStatement("INSERT INTO providers VALUES (?,?,?,?,?,?,?,?,?,?) "
+            try (var statement = connection.prepareStatement("INSERT INTO providers "
+                    + "(id,name,base_url,encrypted_key,enabled,daily_request_limit,daily_token_limit,max_concurrency,token_reservation,created_at) "
+                    + "VALUES (?,?,?,?,?,?,?,?,?,?) "
                     + "ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,"
                     + "encrypted_key=excluded.encrypted_key,enabled=excluded.enabled,"
                     + "daily_request_limit=excluded.daily_request_limit,daily_token_limit=excluded.daily_token_limit,"

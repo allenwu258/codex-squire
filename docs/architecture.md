@@ -46,7 +46,7 @@ flowchart LR
 | `gateway` | 路由候选、上游生命周期、原始数据流转发、增量解析 |
 | `usage` | 原子准入、占额、幂等结算、统计和日志查询 |
 | `security` | 管理/网关鉴权、Origin 约束、凭据加解密 |
-| `persistence` | SQLite 连接配置、事务、进程锁、V1 初始化与版本检查 |
+| `persistence` | SQLite 连接配置、事务、进程锁、版本化迁移与版本检查 |
 | `config` | 有界 JDBC 调度器与 UTC 时钟 |
 | `frontend/src/features` | 按领域拆分的页面与编辑器 |
 | `frontend/src/api.ts` | 类型化 API 客户端与统一异常映射 |
@@ -153,7 +153,7 @@ UsageInspector 只观察数据：
 
 备份时先停止后端，再备份整个数据目录，包括 `master.key`。仅备份 `squire.db` 无法解密来源密钥；运行中直接复制单个 DB 文件也可能遗漏 WAL。恢复时使用同一应用版本或兼容的后续版本。不要手动删除主密钥来“重置”来源。
 
-当前 schema 只有 V1 SQL 和 `PRAGMA user_version`，尚无增量迁移历史或校验和；现有加密数据库缺少主密钥时也没有完整的启动保护。这两项是继续扩展业务前的数据可靠性工作，详见 [K04/K05](known-issues.md)。
+当前数据库由版本化迁移器管理，并在 `schema_migrations` 中保存迁移 checksum；已有 V1 数据库会先安全 baseline，再执行后续增量迁移。新增持久化字段前仍必须补对应版本迁移和升级测试。已有加密凭据但主密钥缺失时，后端会拒绝启动并要求从备份恢复；密钥轮换和密文版本化仍属于后续工作，详见 [已知问题](known-issues.md)。
 
 ## 10. Tauri 与后续模块
 

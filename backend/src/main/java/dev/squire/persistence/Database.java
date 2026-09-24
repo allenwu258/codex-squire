@@ -5,7 +5,6 @@ import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -14,7 +13,6 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -40,20 +38,15 @@ public final class Database {
             throw new IllegalStateException("Another backend owns this data directory");
         }
         url = "jdbc:sqlite:" + directory.resolve("squire.db");
-        try (Connection connection = open(); Statement statement = connection.createStatement()) {
-            statement.execute("PRAGMA journal_mode=WAL");
-            try (var result = statement.executeQuery("PRAGMA user_version")) {
-                result.next();
-                int version = result.getInt(1);
-                if (version > 1) {
-                    throw new IllegalStateException("Database schema is newer than this application");
-                }
-                if (version == 0) {
-                    migrate(connection);
-                }
+        try (Connection connection = open()) {
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA journal_mode=WAL");
             }
-            statement.executeUpdate("UPDATE attempts SET status='INTERRUPTED', usage_state='RESERVED', "
-                    + "ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='IN_FLIGHT'");
+            new MigrationRunner().migrate(connection);
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("UPDATE attempts SET status='INTERRUPTED', usage_state='RESERVED', "
+                        + "ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='IN_FLIGHT'");
+            }
         } catch (IOException | SQLException | RuntimeException exception) {
             lock.release();
             lockChannel.close();
@@ -90,6 +83,17 @@ public final class Database {
         }
     }
 
+    public boolean hasEncryptedCredentials() {
+        return read(connection -> {
+            try (var statement = connection.prepareStatement(
+                    "SELECT EXISTS(SELECT 1 FROM providers WHERE encrypted_key IS NOT NULL AND encrypted_key <> '')");
+                    var result = statement.executeQuery()) {
+                result.next();
+                return result.getBoolean(1);
+            }
+        });
+    }
+
     private Connection open() throws SQLException {
         Connection connection = DriverManager.getConnection(url);
         try (Statement statement = connection.createStatement()) {
@@ -99,32 +103,17 @@ public final class Database {
         return connection;
     }
 
-    private void migrate(Connection connection) throws IOException, SQLException {
-        String schema;
-        try (var input = new ClassPathResource("db/V1.sql").getInputStream()) {
-            schema = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        try (Statement statement = connection.createStatement()) {
-            statement.execute("BEGIN IMMEDIATE");
-            try {
-                for (String sql : schema.split(";")) {
-                    if (!sql.isBlank()) {
-                        statement.execute(sql);
-                    }
-                }
-                statement.execute("COMMIT");
-            } catch (SQLException exception) {
-                statement.execute("ROLLBACK");
-                throw exception;
-            }
-        }
-    }
-
     private RuntimeException translate(SQLException exception) {
         if (exception.getErrorCode() == 19) {
             return new ApiException(409, "CONFLICT", "Name already exists or resource is referenced by a scheme");
         }
-        return new IllegalStateException("SQLite operation failed", exception);
+        String message = exception.getMessage() == null ? "" : exception.getMessage();
+        String normalized = message.toLowerCase(java.util.Locale.ROOT);
+        if (exception.getErrorCode() == 5 || exception.getErrorCode() == 6
+                || normalized.contains("busy") || normalized.contains("locked")) {
+            return new ApiException(503, "DATABASE_BUSY", "Local storage is busy; retry the operation");
+        }
+        return new ApiException(500, "STORAGE_ERROR", "Local storage operation failed");
     }
 
     @PreDestroy
