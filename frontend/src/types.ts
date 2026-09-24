@@ -34,6 +34,7 @@ export interface ProviderUsage {
 export interface Statistics {
   day: string;
   requests: number;
+  attempts: number;
   successes: number;
   failures: number;
   inFlight: number;
@@ -59,7 +60,29 @@ export interface Attempt {
   cachedTokens: number;
   chargedTokens: number;
   usageState: string;
+  upstreamOutcome: string;
+  deliveryOutcome: string;
   latencyMs: number;
+  attemptIndex: number;
+  firstByteAt: string | null;
+  requestBytes: number;
+  responseBytes: number;
+  errorCode: string | null;
+  failureStage: string | null;
+  skipReason: string | null;
+  upstreamRequestId: string | null;
+}
+export interface ProviderRuntimeState {
+  providerId: string;
+  health: string;
+  consecutiveFailures: number;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastErrorCode: string | null;
+  lastErrorMessage: string | null;
+  cooldownUntil: string | null;
+  averageLatencyMs: number;
+  lastResponseStatus: number | null;
 }
 export interface Connection {
   baseUrl: string;

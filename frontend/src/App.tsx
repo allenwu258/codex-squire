@@ -7,7 +7,7 @@ import { Providers } from './features/Providers';
 import { Schemes } from './features/Schemes';
 import { Requests } from './features/Requests';
 import { Connection } from './features/Connection';
-import type { Provider, Scheme, Statistics } from './types';
+import type { Provider, ProviderRuntimeState, Scheme, Statistics } from './types';
 
 const navigation = [
   { id: 'overview', name: '运行概览', icon: LayoutDashboard },
@@ -21,28 +21,40 @@ const TOKEN_KEY = 'squire.adminToken';
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? '');
   const [page, setPage] = useState(() => location.hash.slice(1) || 'overview');
-  const [data, setData] = useState<{ providers: Provider[]; schemes: Scheme[]; statistics: Statistics } | null>(null);
+  const [data, setData] = useState<{ providers: Provider[]; schemes: Scheme[]; statistics: Statistics; runtime: ProviderRuntimeState[] } | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const mounted = useRef(true);
+  const refreshSequence = useRef(0);
+  const refreshController = useRef<AbortController | null>(null);
   const api = useMemo(() => new ApiClient(token), [token]);
   const refresh = useCallback(async () => {
     if (!token) return;
+    const sequence = ++refreshSequence.current;
+    refreshController.current?.abort();
+    const controller = new AbortController();
+    refreshController.current = controller;
     setBusy(true);
     try {
-      const [providers, schemes, statistics] = await Promise.all([api.providers(), api.schemes(), api.statistics()]);
-      if (mounted.current) { setData({ providers, schemes, statistics }); setError(''); setRevision(value => value + 1); }
+      const [providers, schemes, statistics, runtime] = await Promise.all([
+        api.providers(controller.signal), api.schemes(controller.signal), api.statistics(controller.signal),
+        api.providerRuntime(controller.signal),
+      ]);
+      if (mounted.current && sequence === refreshSequence.current) {
+        setData({ providers, schemes, statistics, runtime }); setError(''); setRevision(value => value + 1);
+      }
     } catch (failure) {
+      if (controller.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 401) { sessionStorage.removeItem(TOKEN_KEY); setToken(''); setData(null); }
-      if (mounted.current) setError(errorMessage(failure));
-    } finally { if (mounted.current) setBusy(false); }
+      if (mounted.current && sequence === refreshSequence.current) setError(errorMessage(failure));
+    } finally { if (mounted.current && sequence === refreshSequence.current) setBusy(false); }
   }, [api, token]);
   useEffect(() => {
     mounted.current = true;
     void refresh();
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 5000);
-    return () => { mounted.current = false; clearInterval(timer); };
+    return () => { mounted.current = false; clearInterval(timer); refreshController.current?.abort(); };
   }, [refresh]);
   useEffect(() => {
     const handler = () => setPage(location.hash.slice(1) || 'overview');
@@ -59,7 +71,7 @@ export default function App() {
     <div className="main-shell"><header className="topbar"><span className="breadcrumb">工作空间 <ChevronRight size={13} />{activePage.name}</span><div className="topbar-actions"><Badge tone={error ? 'amber' : 'green'}>{error ? '连接异常' : data ? '服务在线' : '连接中'}</Badge><IconButton icon={busy ? LoaderCircle : RefreshCw} label="刷新" disabled={busy} onClick={() => void refresh()} /><IconButton icon={LogOut} label="退出管理" onClick={logout} /></div></header>
       <main>{error && <ErrorNotice message={error} />}{!data ? <div className="loading"><LoaderCircle className="spin" size={24} />正在连接本地后端</div> : <>
         {activePage.id === 'overview' && <Overview {...data} navigate={navigate} />}
-        {activePage.id === 'providers' && <Providers api={api} providers={data.providers} statistics={data.statistics} refresh={refresh} />}
+        {activePage.id === 'providers' && <Providers api={api} providers={data.providers} runtime={data.runtime} statistics={data.statistics} refresh={refresh} />}
         {activePage.id === 'schemes' && <Schemes api={api} providers={data.providers} schemes={data.schemes} refresh={refresh} />}
         {activePage.id === 'requests' && <Requests api={api} revision={revision} />}
         {activePage.id === 'connection' && <Connection api={api} active={data.schemes.some(scheme => scheme.active)} refresh={refresh} />}

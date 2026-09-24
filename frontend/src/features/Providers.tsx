@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { Pencil, Plus, Search, Server, Trash2 } from 'lucide-react';
 import { Badge, ConfirmDelete, Empty, IconButton, Modal, number, SaveForm } from '../components';
 import type { ApiClient } from '../api';
-import type { Provider, ProviderInput, Statistics } from '../types';
+import type { Provider, ProviderInput, ProviderRuntimeState, Statistics } from '../types';
 
-interface Props { api: ApiClient; providers: Provider[]; statistics: Statistics; refresh: () => Promise<void> }
+interface Props { api: ApiClient; providers: Provider[]; runtime: ProviderRuntimeState[]; statistics: Statistics; refresh: () => Promise<void> }
 
-export function Providers({ api, providers, statistics, refresh }: Props) {
+const healthLabels: Record<string, string> = { READY: '健康', RATE_LIMITED: '冷却中', UNHEALTHY: '异常', UNKNOWN: '未探测' };
+
+export function Providers({ api, providers, runtime, statistics, refresh }: Props) {
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<Provider | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Provider | null>(null);
@@ -19,9 +21,12 @@ export function Providers({ api, providers, statistics, refresh }: Props) {
       <div className="table-wrap"><table><thead><tr><th>来源</th><th>状态</th><th>今日请求 / 限额</th><th>今日占额 / Token 限额</th><th>并发</th><th className="right">操作</th></tr></thead>
         <tbody>{visible.map(provider => {
           const usage = statistics.providers.find(row => row.providerId === provider.id);
+          const state = runtime.find(row => row.providerId === provider.id);
+          const health = state?.health ?? 'UNKNOWN';
           const charged = usage?.chargedTokens ?? 0;
           return <tr key={provider.id}><td><strong>{provider.name}</strong><small className="mono url">{provider.baseUrl}</small></td>
-            <td><Badge tone={provider.enabled ? 'green' : ''}>{provider.enabled ? '已启用' : '已停用'}</Badge></td>
+            <td><div><Badge tone={provider.enabled ? 'green' : ''}>{provider.enabled ? '已启用' : '已停用'}</Badge>
+              <Badge tone={health === 'READY' ? 'green' : health === 'UNKNOWN' ? '' : 'amber'}>{healthLabels[health] ?? health}</Badge></div></td>
             <td className="numeric">{number(usage?.requests ?? 0)} <span className="muted">/ {provider.dailyRequestLimit ? number(provider.dailyRequestLimit) : '不限'}</span></td>
             <td><div className="numeric">{number(charged)} <span className="muted">/ {provider.dailyTokenLimit ? number(provider.dailyTokenLimit) : '不限'}</span></div>
               {provider.dailyTokenLimit > 0 && <progress aria-label={`${provider.name} Token 占额`} max={provider.dailyTokenLimit} value={charged} />}</td>

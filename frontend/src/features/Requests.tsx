@@ -5,6 +5,8 @@ import { Badge, CopyButton, Empty, ErrorNotice, errorMessage, IconButton, Modal,
 import type { Attempt } from '../types';
 
 const labels: Record<string, string> = { SUCCEEDED: '已完成', IN_FLIGHT: '进行中', INCOMPLETE: '未完成', FAILED: '失败', UPSTREAM_ERROR: '上游错误', TRANSPORT_ERROR: '连接错误', CANCELLED: '已取消', INTERRUPTED: '异常中断', RATE_LIMITED: '上游限流', REDIRECT_REJECTED: '重定向拒绝' };
+const outcomes: Record<string, string> = { COMPLETED: '上游已完成', FAILED: '上游失败', INCOMPLETE: '上游未完成', REJECTED: '上游拒绝', UNKNOWN: '未知' };
+const deliveries: Record<string, string> = { DELIVERED: '已交付', CLIENT_CANCELLED: '客户端取消', WRITE_FAILED: '写入失败', DOWNSTREAM_DISCONNECTED: '下游断开', PENDING: '未完成' };
 const usageLabels: Record<string, string> = { REPORTED: '上游已报告', RESERVED: '预留额度', NOT_APPLICABLE: '不计 Token' };
 
 export function Requests({ api, revision }: { api: ApiClient; revision: number }) {
@@ -17,8 +19,9 @@ export function Requests({ api, revision }: { api: ApiClient; revision: number }
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    void api.attempts(offset).then(values => { if (alive) { setRows(values); setError(''); } }).catch(failure => { if (alive) setError(errorMessage(failure)); }).finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
+    const controller = new AbortController();
+    void api.attempts(offset, controller.signal).then(values => { if (alive) { setRows(values); setError(''); } }).catch(failure => { if (alive && !controller.signal.aborted) setError(errorMessage(failure)); }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; controller.abort(); };
   }, [api, offset, revision]);
   const visible = rows.filter(row => `${row.providerName} ${row.model} ${row.requestId}`.toLowerCase().includes(query.toLowerCase()));
   function download() {
@@ -36,7 +39,7 @@ export function Requests({ api, revision }: { api: ApiClient; revision: number }
     <div className="pagination"><span>第 {offset / 30 + 1} 页 · {rows.length} 条</span><div className="row-actions"><IconButton icon={ChevronLeft} label="上一页" disabled={offset === 0 || loading} onClick={() => setOffset(offset - 30)} /><IconButton icon={ChevronRight} label="下一页" disabled={rows.length < 30 || loading} onClick={() => setOffset(offset + 30)} /></div></div>
     {detail && <Modal title="请求详情" close={() => setDetail(null)}><div className="form-body"><dl className="details">
       <dt>网关请求 ID</dt><dd className="mono">{detail.requestId}<CopyButton value={detail.requestId} /></dd><dt>尝试 ID</dt><dd className="mono">{detail.id}</dd><dt>Provider</dt><dd>{detail.providerName}</dd><dt>HTTP 状态</dt><dd>{detail.httpStatus ?? '未收到响应头'}</dd>
-      <dt>状态</dt><dd>{labels[detail.status] ?? detail.status}</dd><dt>统计口径</dt><dd>{usageLabels[detail.usageState]}</dd><dt>缓存输入 Token</dt><dd>{number(detail.cachedTokens)}</dd><dt>本次额度占用</dt><dd>{number(detail.chargedTokens)}</dd>
+      <dt>状态</dt><dd>{labels[detail.status] ?? detail.status}</dd><dt>上游结果</dt><dd>{outcomes[detail.upstreamOutcome] ?? detail.upstreamOutcome}</dd><dt>客户端交付</dt><dd>{deliveries[detail.deliveryOutcome] ?? detail.deliveryOutcome}</dd><dt>尝试序号</dt><dd>{detail.attemptIndex}</dd><dt>失败阶段</dt><dd>{detail.failureStage ?? '—'}</dd><dt>统计口径</dt><dd>{usageLabels[detail.usageState]}</dd><dt>缓存输入 Token</dt><dd>{number(detail.cachedTokens)}</dd><dt>本次额度占用</dt><dd>{number(detail.chargedTokens)}</dd>
     </dl></div><footer><button className="button" onClick={() => setDetail(null)}><X size={16} />关闭</button></footer></Modal>}
   </>;
 }

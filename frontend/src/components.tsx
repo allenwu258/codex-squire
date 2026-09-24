@@ -3,7 +3,23 @@ import { AlertCircle, Check, Copy, LoaderCircle, Trash2, X, type LucideIcon } fr
 
 export const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value);
 export const shortNumber = (value: number) => new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-export const errorMessage = (error: unknown) => error instanceof Error ? error.message : '操作失败';
+const errorLabels: Record<string, string> = {
+  DATABASE_BUSY: '本地存储正忙，请稍后重试',
+  STORAGE_ERROR: '本地存储操作失败',
+  CREDENTIAL_DECRYPTION_FAILED: 'Provider 密钥无法解密，请恢复主密钥或重新配置',
+  UPSTREAM_REDIRECT: '上游重定向已拒绝',
+  UPSTREAM_TIMEOUT: '上游响应超时',
+  UPSTREAM_CONNECTION_ERROR: '无法连接上游 Provider',
+  NO_AVAILABLE_PROVIDER: '当前没有可接收请求的 Provider',
+  CONFLICT: '配置已被其他操作修改，请刷新后重试',
+};
+export const errorMessage = (error: unknown) => {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: string }).code;
+    if (code && errorLabels[code]) return errorLabels[code];
+  }
+  return error instanceof Error ? error.message : '操作失败';
+};
 
 export function IconButton({ icon: Icon, label, onClick, disabled = false, danger = false }: {
   icon: LucideIcon; label: string; onClick: () => void; disabled?: boolean; danger?: boolean;

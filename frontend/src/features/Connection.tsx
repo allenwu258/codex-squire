@@ -21,10 +21,8 @@ export function Connection({ api, active, refresh }: { api: ApiClient; active: b
     if (!info) return;
     setBusy(true); setError(''); setResult('');
     try {
-      const response = await fetch('/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${info.gatewayToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, input: 'Reply with OK.', stream: false, store: false, max_output_tokens: 32 }), signal: AbortSignal.timeout(120000) });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 600)}`);
+      const text = await api.gatewayResponse(info.gatewayToken,
+        { model, input: 'Reply with OK.', stream: false, store: false, max_output_tokens: 32 });
       setResult(text.slice(0, 5000));
     } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); await refresh(); }
   }

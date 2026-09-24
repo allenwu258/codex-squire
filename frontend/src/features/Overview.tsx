@@ -12,7 +12,7 @@ export function Overview({ providers, schemes, statistics, navigate }: {
   return <>
     <div className="page-title"><div><div className="eyebrow">WORKSPACE / OVERVIEW</div><h1>运行概览</h1></div><span className="date-label">{statistics.day} <Badge>UTC</Badge></span></div>
     <section className="metrics">
-      <div><span><Activity size={17} />上游请求</span><strong>{number(statistics.requests)}</strong><small>{statistics.successes} 成功 · {statistics.failures} 未成功</small></div>
+      <div><span><Activity size={17} />逻辑请求</span><strong>{number(statistics.requests)}</strong><small>{number(statistics.attempts)} 次上游尝试 · {statistics.successes} 成功 · {statistics.failures} 未成功</small></div>
       <div><span><Zap size={17} />已报告 Token</span><strong>{shortNumber(total)}</strong><small>{number(total)} tokens</small></div>
       <div><span><Database size={17} />缓存输入</span><strong>{shortNumber(statistics.cachedTokens)}</strong><small>包含在输入 Token 中</small></div>
       <div><span><Activity size={17} />进行中</span><strong>{statistics.inFlight}<i className="live-dot" /></strong><small>{statistics.uncertainRequests} 次用量待确认</small></div>
