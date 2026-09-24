@@ -157,7 +157,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(1);
+            assertThat(migrationCount).isEqualTo(2);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
@@ -172,7 +172,31 @@ class QuotaAndPersistenceTest {
                 .hasMessageContaining("checksum mismatch");
     }
 
+    @Test
+    void storesUpstreamAndDeliveryOutcomesIndependentlyAndSettlesOnce() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var admission = attempts.admit(id, "scheme", "request", "model");
+            attempts.finish(admission, new AttemptRepository.Settlement("CANCELLED", 200,
+                    new Usage(10, 5, 0), false, "COMPLETED", "CLIENT_CANCELLED"));
+            attempts.finish(admission, new AttemptRepository.Settlement("FAILED", 500,
+                    new Usage(100, 100, 0), false, "FAILED", "WRITE_FAILED"));
+            AttemptRepository.Attempt attempt = attempts.list(10, 0).get(0);
+            assertThat(attempt.status()).isEqualTo("CANCELLED");
+            assertThat(attempt.upstreamOutcome()).isEqualTo("COMPLETED");
+            assertThat(attempt.deliveryOutcome()).isEqualTo("CLIENT_CANCELLED");
+            assertThat(attempt.chargedTokens()).isEqualTo(15);
+        } finally {
+            database.close();
+        }
+    }
+
     private ProviderInput input(long requests, long tokens) {
         return new ProviderInput("provider", "https://api.example.com/v1", "upstream-key", true, requests, tokens, 128, 100);
     }
 }
+

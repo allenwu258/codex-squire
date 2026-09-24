@@ -77,12 +77,14 @@ public final class GatewayService {
             AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model);
             return admission == null ? null : new AttemptContext(admission);
         }).subscribeOn(databaseScheduler).doOnDiscard(AttemptContext.class, context ->
-                databaseScheduler.schedule(() -> attempts.finish(context.admission, "CANCELLED", null, null, false)));
+                databaseScheduler.schedule(() -> attempts.finish(context.admission,
+                        new AttemptRepository.Settlement("CANCELLED", null, null, false,
+                                context.upstreamOutcome, "CLIENT_CANCELLED"))));
         return Mono.usingWhen(resource,
                 context -> send(context, body, exchange, nextAttempted.size() < route.members().size()),
-                context -> settle(context, context.status),
-                (context, error) -> settle(context, "TRANSPORT_ERROR"),
-                context -> settle(context, "CANCELLED"))
+                this::settle,
+                this::settleOnError,
+                this::settleOnCancel)
                 .defaultIfEmpty(Outcome.RETRY)
                 .flatMap(outcome -> outcome == Outcome.RETRY
                         ? next(route, nextAttempted, requestId, model, body, exchange) : Mono.just(outcome));
@@ -115,10 +117,12 @@ public final class GatewayService {
         // Only explicit rate rejection is replayable by default. Other failures may have executed work.
         if (status == 429 && hasNext) {
             context.status = "RATE_LIMITED";
+            context.upstreamOutcome = "REJECTED";
             return upstream.releaseBody().thenReturn(Outcome.RETRY);
         }
         if (status >= 300 && status < 400) {
             context.status = "REDIRECT_REJECTED";
+            context.upstreamOutcome = "REJECTED";
             return upstream.releaseBody().then(Mono.error(new ApiException(502, "UPSTREAM_REDIRECT", "Upstream redirect refused")));
         }
         context.status = status >= 400 ? "UPSTREAM_ERROR" : "SUCCEEDED";
@@ -143,18 +147,60 @@ public final class GatewayService {
             context.inspector.accept(bytes);
         }).doOnComplete(() -> {
             context.inspector.end();
-            if (status < 400) {
-                context.status = context.inspector.resultStatus();
-            }
+            context.upstreamOutcome = upstreamOutcome(status, context.inspector.resultStatus());
+            context.status = status < 400 ? context.inspector.resultStatus() : "UPSTREAM_ERROR";
         });
         // Flush each upstream chunk; buffering the whole Flux breaks interactive SSE delivery.
-        return exchange.getResponse().writeAndFlushWith(content.map(Mono::just)).thenReturn(Outcome.DELIVERED);
+        return exchange.getResponse().writeAndFlushWith(content.map(Mono::just))
+                .then(Mono.fromSupplier(() -> {
+                    context.deliveryOutcome = "DELIVERED";
+                    return Outcome.DELIVERED;
+                }))
+                .doOnError(error -> context.deliveryOutcome = "WRITE_FAILED");
     }
 
-    private Mono<Void> settle(AttemptContext context, String status) {
-        return Mono.fromRunnable(() -> attempts.finish(context.admission, status, context.httpStatus,
-                context.inspector == null ? null : context.inspector.usage(), context.rejected))
+    private Mono<Void> settle(AttemptContext context) {
+        return settleWith(context, context.status);
+    }
+
+    private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
+        if (context.upstreamOutcome.equals("UNKNOWN")) {
+            context.upstreamOutcome = "FAILED";
+        }
+        if (context.deliveryOutcome.equals("PENDING")) {
+            context.deliveryOutcome = "WRITE_FAILED";
+        }
+        if (context.status.equals("SUCCEEDED")) {
+            context.status = "TRANSPORT_ERROR";
+        }
+        return settle(context);
+    }
+
+    private Mono<Void> settleOnCancel(AttemptContext context) {
+        context.status = "CANCELLED";
+        context.deliveryOutcome = "CLIENT_CANCELLED";
+        return settle(context);
+    }
+
+    private Mono<Void> settleWith(AttemptContext context, String status) {
+        context.status = status;
+        return Mono.fromRunnable(() -> attempts.finish(context.admission,
+                        new AttemptRepository.Settlement(context.status, context.httpStatus,
+                                context.inspector == null ? null : context.inspector.usage(), context.rejected,
+                                context.upstreamOutcome, context.deliveryOutcome)))
                 .subscribeOn(databaseScheduler).then();
+    }
+
+    private String upstreamOutcome(int status, String inspectorStatus) {
+        if (status >= 400) {
+            return "FAILED";
+        }
+        return switch (inspectorStatus) {
+            case "SUCCEEDED" -> "COMPLETED";
+            case "INCOMPLETE" -> "INCOMPLETE";
+            case "FAILED" -> "FAILED";
+            default -> "UNKNOWN";
+        };
     }
 
     private String validate(byte[] body) {
@@ -181,6 +227,8 @@ public final class GatewayService {
         private String status = "TRANSPORT_ERROR";
         private Integer httpStatus;
         private boolean rejected;
+        private String upstreamOutcome = "UNKNOWN";
+        private String deliveryOutcome = "PENDING";
 
         private AttemptContext(AttemptRepository.Admission admission) {
             this.admission = admission;

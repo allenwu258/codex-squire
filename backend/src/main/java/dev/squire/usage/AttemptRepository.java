@@ -31,7 +31,10 @@ public final class AttemptRepository {
     public record Attempt(String id, String requestId, String providerId, String providerName, String model,
                           String startedAt, String endedAt, String status, Integer httpStatus,
                           long inputTokens, long outputTokens, long cachedTokens, long chargedTokens,
-                          String usageState, long latencyMs) { }
+                          String usageState, String upstreamOutcome, String deliveryOutcome, long latencyMs) { }
+
+    public record Settlement(String status, Integer httpStatus, Usage usage, boolean rejected,
+                             String upstreamOutcome, String deliveryOutcome) { }
 
     public record ProviderUsage(String providerId, long requests, long inputTokens, long outputTokens,
                                 long cachedTokens, long chargedTokens, long inFlight, long uncertainRequests) { }
@@ -88,22 +91,43 @@ public final class AttemptRepository {
     }
 
     public void finish(Admission admission, String status, Integer httpStatus, Usage usage, boolean rejected) {
+        String upstream = switch (status) {
+            case "SUCCEEDED" -> "COMPLETED";
+            case "INCOMPLETE" -> "INCOMPLETE";
+            case "FAILED", "UPSTREAM_ERROR", "TRANSPORT_ERROR", "REDIRECT_REJECTED" -> "FAILED";
+            case "RATE_LIMITED" -> "REJECTED";
+            default -> "UNKNOWN";
+        };
+        String delivery = switch (status) {
+            case "CANCELLED" -> "CLIENT_CANCELLED";
+            case "SUCCEEDED", "INCOMPLETE", "FAILED", "UPSTREAM_ERROR" -> "DELIVERED";
+            default -> "PENDING";
+        };
+        finish(admission, new Settlement(status, httpStatus, usage, rejected, upstream, delivery));
+    }
+
+    public void finish(Admission admission, Settlement settlement) {
         database.transaction(connection -> {
-            long charged = usage != null ? usage.totalTokens() : (rejected ? 0 : admission.provider().tokenReservation());
-            String state = usage != null ? "REPORTED" : (rejected ? "NOT_APPLICABLE" : "RESERVED");
+            Usage usage = settlement.usage();
+            long charged = usage != null ? usage.totalTokens()
+                    : (settlement.rejected() ? 0 : admission.provider().tokenReservation());
+            String state = usage != null ? "REPORTED" : (settlement.rejected() ? "NOT_APPLICABLE" : "RESERVED");
             try (var statement = connection.prepareStatement("UPDATE attempts SET status=?,http_status=?,ended_at=?,"
-                    + "charged_tokens=?,input_tokens=?,output_tokens=?,cached_tokens=?,usage_state=?,latency_ms=? "
+                    + "charged_tokens=?,input_tokens=?,output_tokens=?,cached_tokens=?,usage_state=?,"
+                    + "upstream_outcome=?,delivery_outcome=?,latency_ms=? "
                     + "WHERE id=? AND status='IN_FLIGHT'")) {
-                statement.setString(1, status);
-                statement.setObject(2, httpStatus);
+                statement.setString(1, settlement.status());
+                statement.setObject(2, settlement.httpStatus());
                 statement.setString(3, clock.instant().toString());
                 statement.setLong(4, charged);
                 statement.setLong(5, usage == null ? 0 : usage.inputTokens());
                 statement.setLong(6, usage == null ? 0 : usage.outputTokens());
                 statement.setLong(7, usage == null ? 0 : usage.cachedTokens());
                 statement.setString(8, state);
-                statement.setLong(9, Math.max(0, Duration.between(admission.startedAt(), clock.instant()).toMillis()));
-                statement.setString(10, admission.id());
+                statement.setString(9, settlement.upstreamOutcome());
+                statement.setString(10, settlement.deliveryOutcome());
+                statement.setLong(11, Math.max(0, Duration.between(admission.startedAt(), clock.instant()).toMillis()));
+                statement.setString(12, admission.id());
                 statement.executeUpdate();
             }
             return null;
@@ -118,7 +142,7 @@ public final class AttemptRepository {
                 statement.setInt(2, offset);
                 try (var row = statement.executeQuery()) {
                     while (row.next()) {
-                        attempts.add(map(row));
+                attempts.add(map(row));
                     }
                 }
             }
@@ -170,6 +194,7 @@ public final class AttemptRepository {
                 row.getString("provider_name"), row.getString("model"), row.getString("started_at"), row.getString("ended_at"),
                 row.getString("status"), (Integer) row.getObject("http_status"), row.getLong("input_tokens"),
                 row.getLong("output_tokens"), row.getLong("cached_tokens"), row.getLong("charged_tokens"),
-                row.getString("usage_state"), row.getLong("latency_ms"));
+                row.getString("usage_state"), row.getString("upstream_outcome"), row.getString("delivery_outcome"),
+                row.getLong("latency_ms"));
     }
 }

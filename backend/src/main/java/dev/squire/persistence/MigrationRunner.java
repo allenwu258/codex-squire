@@ -14,7 +14,8 @@ import org.springframework.core.io.ClassPathResource;
 /** Applies versioned SQLite migrations and records their checksums. */
 public final class MigrationRunner {
     private static final List<Migration> MIGRATIONS = List.of(
-            new Migration(1, "initial_schema", "db/migration/V1__initial_schema.sql"));
+            new Migration(1, "initial_schema", "db/migration/V1__initial_schema.sql"),
+            new Migration(2, "attempt_outcomes", "db/migration/V2__attempt_outcomes.sql"));
 
     public void migrate(Connection connection) throws IOException, SQLException {
         ensureMigrationsTable(connection);
