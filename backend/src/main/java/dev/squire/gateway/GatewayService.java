@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.squire.api.ApiException;
 import dev.squire.security.LocalSecrets;
 import dev.squire.usage.AttemptRepository;
+import dev.squire.usage.GatewayRequestRepository;
 import io.netty.channel.ChannelOption;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.TimeoutException;
 import java.util.HashSet;
 import java.util.List;
@@ -39,18 +41,21 @@ public final class GatewayService {
     private final RoutingService routing;
     private final OutcomeResolver outcomes;
     private final AttemptRepository attempts;
+    private final GatewayRequestRepository requests;
     private final LocalSecrets secrets;
     private final ObjectMapper mapper;
     private final Scheduler databaseScheduler;
     private final WebClient client;
     private final Duration totalTimeout;
 
-    public GatewayService(RoutingService routing, OutcomeResolver outcomes, AttemptRepository attempts, LocalSecrets secrets, ObjectMapper mapper,
+    public GatewayService(RoutingService routing, OutcomeResolver outcomes, AttemptRepository attempts,
+                          GatewayRequestRepository requests, LocalSecrets secrets, ObjectMapper mapper,
                           Scheduler databaseScheduler, @Value("${squire.upstream-idle-seconds}") int idleSeconds,
                           @Value("${squire.upstream-total-seconds}") int totalSeconds) {
         this.routing = routing;
         this.outcomes = outcomes;
         this.attempts = attempts;
+        this.requests = requests;
         this.secrets = secrets;
         this.mapper = mapper;
         this.databaseScheduler = databaseScheduler;
@@ -66,8 +71,26 @@ public final class GatewayService {
         String requestId = UUID.randomUUID().toString();
         exchange.getResponse().getHeaders().set("x-squire-request-id", requestId);
         return Mono.fromCallable(routing::route).subscribeOn(databaseScheduler)
-                .flatMap(route -> next(route, Set.of(), requestId, model, body, exchange)).then()
+                .flatMap(route -> Mono.fromRunnable(() -> requests.start(requestId, model, streaming(body), route.schemeId()))
+                        .subscribeOn(databaseScheduler)
+                        .then(next(route, Set.of(), requestId, model, body, exchange)
+                                .flatMap(outcome -> finishRequest(requestId, outcome.name()).thenReturn(outcome))
+                                .onErrorResume(error -> finishRequest(requestId, errorCode(error))
+                                        .then(Mono.error(error)))))
+                .then()
                 .onErrorMap(UpstreamTransportException.class, error -> error.apiException());
+    }
+
+    private Mono<Void> finishRequest(String requestId, String outcome) {
+        return Mono.fromRunnable(() -> requests.finish(requestId, outcome, null)).subscribeOn(databaseScheduler)
+                .onErrorResume(error -> {
+                    LOGGER.error("Unable to finish gateway request {}: {}", requestId, error.getMessage());
+                    return Mono.empty();
+                }).then();
+    }
+
+    private String errorCode(Throwable error) {
+        return error instanceof ApiException api ? api.code() : "FAILED";
     }
 
     private Mono<Outcome> next(RoutingService.Route route, Set<String> attempted, String requestId, String model,
@@ -79,7 +102,7 @@ public final class GatewayService {
         Set<String> nextAttempted = new HashSet<>(attempted);
         nextAttempted.add(providerId);
         Mono<AttemptContext> resource = Mono.fromCallable(() -> {
-            AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model);
+            AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model, body.length);
             return admission == null ? null : new AttemptContext(admission);
         }).subscribeOn(databaseScheduler).doOnDiscard(AttemptContext.class, context ->
                 databaseScheduler.schedule(() -> {
@@ -122,6 +145,7 @@ public final class GatewayService {
     private Mono<Outcome> relay(AttemptContext context, ClientResponse upstream, ServerWebExchange exchange, boolean hasNext) {
         int status = upstream.statusCode().value();
         context.httpStatus = status;
+        context.upstreamRequestId = upstream.headers().asHttpHeaders().getFirst("x-request-id");
         context.rejected = status >= 400 && status < 500;
         // Only explicit rate rejection is replayable by default. Other failures may have executed work.
         if (status == 429 && hasNext) {
@@ -135,6 +159,8 @@ public final class GatewayService {
             OutcomeResolver.ResponseOutcome outcome = outcomes.redirect();
             context.status = outcome.status();
             context.upstreamOutcome = outcome.upstreamOutcome();
+            context.errorCode = "UPSTREAM_REDIRECT";
+            context.failureStage = "RESPONSE_HEADERS";
             return upstream.releaseBody().then(Mono.error(new ApiException(502, "UPSTREAM_REDIRECT", "Upstream redirect refused")));
         }
         context.status = status >= 400 ? "UPSTREAM_ERROR" : "SUCCEEDED";
@@ -152,6 +178,10 @@ public final class GatewayService {
             }
         }
         Flux<DataBuffer> content = upstream.bodyToFlux(DataBuffer.class).doOnNext(buffer -> {
+            if (context.firstByteAt == null) {
+                context.firstByteAt = Instant.now().toString();
+            }
+            context.responseBytes += buffer.readableByteCount();
             byte[] bytes = new byte[buffer.readableByteCount()];
             int position = buffer.readPosition();
             buffer.read(bytes);
@@ -177,6 +207,10 @@ public final class GatewayService {
     }
 
     private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
+        if (context.errorCode == null) {
+            context.errorCode = error instanceof ApiException api ? api.code() : "UPSTREAM_CONNECTION_ERROR";
+            context.failureStage = context.httpStatus == null ? "CONNECT" : "RESPONSE_BODY";
+        }
         OutcomeResolver.FailureOutcome outcome = outcomes.transport(context.status, context.upstreamOutcome,
                 !context.deliveryOutcome.equals("PENDING"));
         context.status = outcome.status();
@@ -186,6 +220,8 @@ public final class GatewayService {
     }
 
     private Mono<Void> settleOnCancel(AttemptContext context) {
+        context.errorCode = "CLIENT_CANCELLED";
+        context.failureStage = context.httpStatus == null ? "CONNECT" : "DELIVERY";
         OutcomeResolver.FailureOutcome outcome = outcomes.cancelled(context.upstreamOutcome);
         context.status = outcome.status();
         context.upstreamOutcome = outcome.upstreamOutcome();
@@ -198,7 +234,9 @@ public final class GatewayService {
         return Mono.fromRunnable(() -> attempts.finish(context.admission,
                         new AttemptRepository.Settlement(context.status, context.httpStatus,
                                 context.inspector == null ? null : context.inspector.usage(), context.rejected,
-                                context.upstreamOutcome, context.deliveryOutcome, context.retryAfterSeconds)))
+                                context.upstreamOutcome, context.deliveryOutcome, context.retryAfterSeconds,
+                                context.firstByteAt, context.responseBytes, context.errorCode, context.failureStage,
+                                context.upstreamRequestId)))
                 .subscribeOn(databaseScheduler).then();
     }
 
@@ -236,6 +274,14 @@ public final class GatewayService {
         }
     }
 
+    private boolean streaming(byte[] body) {
+        try {
+            return mapper.readTree(body).path("stream").asBoolean(false);
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
     private enum Outcome { DELIVERED, RETRY }
 
     private static final class AttemptContext {
@@ -247,6 +293,11 @@ public final class GatewayService {
         private String upstreamOutcome = "UNKNOWN";
         private String deliveryOutcome = "PENDING";
         private Long retryAfterSeconds;
+        private String firstByteAt;
+        private long responseBytes;
+        private String errorCode;
+        private String failureStage;
+        private String upstreamRequestId;
 
         private AttemptContext(AttemptRepository.Admission admission) {
             this.admission = admission;

@@ -52,8 +52,8 @@ public final class RoutingService {
         return weightedProvider(route.schemeId(), remaining);
     }
 
-    public AttemptRepository.Admission admit(Route route, String providerId, String requestId, String model) {
-        return attempts.admit(providerId, route.schemeId(), requestId, model);
+    public AttemptRepository.Admission admit(Route route, String providerId, String requestId, String model, long requestBytes) {
+        return attempts.admit(providerId, route.schemeId(), requestId, model, requestBytes);
     }
 
     private String weightedProvider(String schemeId, List<Scheme.Member> members) {

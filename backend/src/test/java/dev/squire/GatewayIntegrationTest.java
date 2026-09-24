@@ -95,6 +95,7 @@ class GatewayIntegrationTest {
         database.transaction(connection -> {
             try (var statement = connection.createStatement()) {
                 statement.executeUpdate("DELETE FROM attempts");
+                statement.executeUpdate("DELETE FROM gateway_requests");
                 statement.executeUpdate("DELETE FROM scheme_members");
                 statement.executeUpdate("DELETE FROM schemes");
                 statement.executeUpdate("DELETE FROM providers");
@@ -127,6 +128,12 @@ class GatewayIntegrationTest {
         assertThat(BODIES.get("a")).isEqualTo(request);
         settled().expectBody().jsonPath("$.inputTokens").isEqualTo(12).jsonPath("$.outputTokens").isEqualTo(8)
                 .jsonPath("$.cachedTokens").isEqualTo(3).jsonPath("$.chargedTokens").isEqualTo(20);
+        admin.get().uri("/api/attempts").exchange().expectStatus().isOk().expectBody()
+                .jsonPath("$[0].attemptIndex").isEqualTo(1)
+                .jsonPath("$[0].requestBytes").value(value -> assertThat(((Number) value).longValue()).isGreaterThan(0))
+                .jsonPath("$[0].responseBytes").value(value -> assertThat(((Number) value).longValue()).isGreaterThan(0))
+                .jsonPath("$[0].firstByteAt").isNotEmpty()
+                .jsonPath("$[0].upstreamRequestId").isEqualTo("upstream-id");
     }
 
     @Test
@@ -143,7 +150,7 @@ class GatewayIntegrationTest {
         MODES.put("a", "429");
         scheme("ORDERED", List.of(provider("a", 0, 0, 4), provider("b", 0, 0, 4)));
         response(false).expectStatus().isOk();
-        settled().expectBody().jsonPath("$.requests").isEqualTo(2).jsonPath("$.chargedTokens").isEqualTo(20);
+        settled().expectBody().jsonPath("$.requests").isEqualTo(1).jsonPath("$.attempts").isEqualTo(2).jsonPath("$.chargedTokens").isEqualTo(20);
         assertThat(CALLS.get("a").get()).isEqualTo(1);
         assertThat(CALLS.get("b").get()).isEqualTo(1);
     }
@@ -234,7 +241,6 @@ class GatewayIntegrationTest {
             response(false).expectStatus().isOk();
             settled();
         }
-        System.out.println("ROUTE_CALLS=" + CALLS);
         assertThat(CALLS.get("a")).isNull();
         assertThat(CALLS.get("b").get()).isEqualTo(6);
         assertThat(CALLS.get("c").get()).isEqualTo(6);
@@ -378,4 +384,5 @@ class GatewayIntegrationTest {
         }
     }
 }
+
 

@@ -35,24 +35,39 @@ public final class AttemptRepository {
     public record Attempt(String id, String requestId, String providerId, String providerName, String model,
                           String startedAt, String endedAt, String status, Integer httpStatus,
                           long inputTokens, long outputTokens, long cachedTokens, long chargedTokens,
-                          String usageState, String upstreamOutcome, String deliveryOutcome, long latencyMs) { }
+                          String usageState, String upstreamOutcome, String deliveryOutcome, long latencyMs,
+                          int attemptIndex, String firstByteAt, long requestBytes, long responseBytes,
+                          String errorCode, String failureStage, String skipReason, String upstreamRequestId) { }
 
     public record Settlement(String status, Integer httpStatus, Usage usage, boolean rejected,
-                             String upstreamOutcome, String deliveryOutcome, Long retryAfterSeconds) {
+                             String upstreamOutcome, String deliveryOutcome, Long retryAfterSeconds,
+                             String firstByteAt, long responseBytes, String errorCode, String failureStage,
+                             String upstreamRequestId) {
         public Settlement(String status, Integer httpStatus, Usage usage, boolean rejected,
                           String upstreamOutcome, String deliveryOutcome) {
-            this(status, httpStatus, usage, rejected, upstreamOutcome, deliveryOutcome, null);
+            this(status, httpStatus, usage, rejected, upstreamOutcome, deliveryOutcome, null,
+                    null, 0, null, null, null);
+        }
+
+        public Settlement(String status, Integer httpStatus, Usage usage, boolean rejected,
+                          String upstreamOutcome, String deliveryOutcome, Long retryAfterSeconds) {
+            this(status, httpStatus, usage, rejected, upstreamOutcome, deliveryOutcome, retryAfterSeconds,
+                    null, 0, null, null, null);
         }
     }
 
     public record ProviderUsage(String providerId, long requests, long inputTokens, long outputTokens,
                                 long cachedTokens, long chargedTokens, long inFlight, long uncertainRequests) { }
 
-    public record Statistics(String day, long requests, long successes, long failures, long inFlight,
+    public record Statistics(String day, long requests, long attempts, long successes, long failures, long inFlight,
                              long inputTokens, long outputTokens, long cachedTokens, long chargedTokens,
                              long uncertainRequests, List<ProviderUsage> providers) { }
 
     public Admission admit(String providerId, String schemeId, String requestId, String model) {
+        return admit(providerId, schemeId, requestId, model, 0);
+    }
+
+    public Admission admit(String providerId, String schemeId, String requestId, String model, long requestBytes) {
         return database.transaction(connection -> {
             Provider provider = providers.find(connection, providerId);
             if (!provider.enabled()) {
@@ -83,10 +98,19 @@ public final class AttemptRepository {
                     }
                 }
             }
+            int attemptIndex;
+            try (var statement = connection.prepareStatement("SELECT COALESCE(MAX(attempt_index),0)+1 FROM attempts WHERE request_id=?")) {
+                statement.setString(1, requestId);
+                try (var result = statement.executeQuery()) {
+                    result.next();
+                    attemptIndex = result.getInt(1);
+                }
+            }
             String id = UUID.randomUUID().toString();
             try (var statement = connection.prepareStatement("INSERT INTO attempts "
-                    + "(id,request_id,provider_id,provider_name,scheme_id,model,started_at,day,status,reserved_tokens,charged_tokens,usage_state) "
-                    + "VALUES(?,?,?,?,?,?,?,?,'IN_FLIGHT',?,?,'RESERVED')")) {
+                    + "(id,request_id,provider_id,provider_name,scheme_id,model,started_at,day,status,reserved_tokens,"
+                    + "charged_tokens,usage_state,attempt_index,request_bytes) "
+                    + "VALUES(?,?,?,?,?,?,?,?,'IN_FLIGHT',?,?,'RESERVED',?,?)")) {
                 statement.setString(1, id);
                 statement.setString(2, requestId);
                 statement.setString(3, providerId);
@@ -97,6 +121,8 @@ public final class AttemptRepository {
                 statement.setString(8, day);
                 statement.setLong(9, provider.tokenReservation());
                 statement.setLong(10, provider.tokenReservation());
+                statement.setInt(11, attemptIndex);
+                statement.setLong(12, Math.max(0, requestBytes));
                 statement.executeUpdate();
             }
             return new Admission(id, provider, now);
@@ -128,7 +154,8 @@ public final class AttemptRepository {
             Instant endedAt = clock.instant();
             try (var statement = connection.prepareStatement("UPDATE attempts SET status=?,http_status=?,ended_at=?,"
                     + "charged_tokens=?,input_tokens=?,output_tokens=?,cached_tokens=?,usage_state=?,"
-                    + "upstream_outcome=?,delivery_outcome=?,latency_ms=? "
+                    + "upstream_outcome=?,delivery_outcome=?,latency_ms=?,first_byte_at=?,response_bytes=?,error_code=?,"
+                    + "failure_stage=?,upstream_request_id=? "
                     + "WHERE id=? AND status='IN_FLIGHT'")) {
                 statement.setString(1, settlement.status());
                 statement.setObject(2, settlement.httpStatus());
@@ -141,7 +168,12 @@ public final class AttemptRepository {
                 statement.setString(9, settlement.upstreamOutcome());
                 statement.setString(10, settlement.deliveryOutcome());
                 statement.setLong(11, Math.max(0, Duration.between(admission.startedAt(), endedAt).toMillis()));
-                statement.setString(12, admission.id());
+                statement.setString(12, settlement.firstByteAt());
+                statement.setLong(13, Math.max(0, settlement.responseBytes()));
+                statement.setString(14, settlement.errorCode());
+                statement.setString(15, settlement.failureStage());
+                statement.setString(16, settlement.upstreamRequestId());
+                statement.setString(17, admission.id());
                 if (statement.executeUpdate() > 0) {
                     if ("COMPLETED".equals(settlement.upstreamOutcome())) {
                         runtime.markSuccess(connection, admission.provider().id(), endedAt,
@@ -176,7 +208,7 @@ public final class AttemptRepository {
                 statement.setInt(2, offset);
                 try (var row = statement.executeQuery()) {
                     while (row.next()) {
-                attempts.add(map(row));
+                        attempts.add(map(row));
                     }
                 }
             }
@@ -188,7 +220,7 @@ public final class AttemptRepository {
         String day = LocalDate.now(clock).toString();
         return database.read(connection -> {
             List<ProviderUsage> rows = new ArrayList<>();
-            long requests = 0;
+            long attemptsCount = 0;
             long input = 0;
             long output = 0;
             long cached = 0;
@@ -207,7 +239,7 @@ public final class AttemptRepository {
                         ProviderUsage row = new ProviderUsage(result.getString(1), result.getLong(2), result.getLong(3),
                                 result.getLong(4), result.getLong(5), result.getLong(6), result.getLong(7), result.getLong(8));
                         rows.add(row);
-                        requests += row.requests();
+                        attemptsCount += row.requests();
                         input += row.inputTokens();
                         output += row.outputTokens();
                         cached += row.cachedTokens();
@@ -219,7 +251,17 @@ public final class AttemptRepository {
                     }
                 }
             }
-            return new Statistics(day, requests, successes, failures, inFlight, input, output, cached, charged, uncertain, List.copyOf(rows));
+            long logicalRequests;
+            try (var statement = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM gateway_requests WHERE substr(received_at,1,10)=?")) {
+                statement.setString(1, day);
+                try (var result = statement.executeQuery()) {
+                    result.next();
+                    logicalRequests = result.getLong(1);
+                }
+            }
+            return new Statistics(day, logicalRequests, attemptsCount, successes, failures, inFlight,
+                    input, output, cached, charged, uncertain, List.copyOf(rows));
         });
     }
 
@@ -229,6 +271,8 @@ public final class AttemptRepository {
                 row.getString("status"), (Integer) row.getObject("http_status"), row.getLong("input_tokens"),
                 row.getLong("output_tokens"), row.getLong("cached_tokens"), row.getLong("charged_tokens"),
                 row.getString("usage_state"), row.getString("upstream_outcome"), row.getString("delivery_outcome"),
-                row.getLong("latency_ms"));
+                row.getLong("latency_ms"), row.getInt("attempt_index"), row.getString("first_byte_at"),
+                row.getLong("request_bytes"), row.getLong("response_bytes"), row.getString("error_code"),
+                row.getString("failure_stage"), row.getString("skip_reason"), row.getString("upstream_request_id"));
     }
 }
