@@ -11,6 +11,9 @@ import dev.squire.scheme.SchemeInput;
 import dev.squire.scheme.SchemeRepository;
 import dev.squire.security.LocalSecrets;
 import dev.squire.usage.AttemptRepository;
+import dev.squire.usage.QuotaRule;
+import dev.squire.usage.QuotaRuleInput;
+import dev.squire.usage.QuotaRuleRepository;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +41,7 @@ public class AdminController {
     private final AttemptRepository attempts;
     private final Database database;
     private final ProviderRuntimeRepository runtime;
+    private final QuotaRuleRepository quotaRules;
     private final LocalSecrets secrets;
     private final Scheduler scheduler;
     private final String dataDirectory;
@@ -50,6 +54,7 @@ public class AdminController {
         this.attempts = attempts;
         this.database = database;
         runtime = new ProviderRuntimeRepository();
+        quotaRules = new QuotaRuleRepository(database);
         this.secrets = secrets;
         scheduler = databaseScheduler;
         this.dataDirectory = dataDirectory;
@@ -80,6 +85,16 @@ public class AdminController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> deleteProvider(@PathVariable String id) {
         return Mono.fromRunnable(() -> providers.delete(id)).subscribeOn(scheduler).then();
+    }
+
+    @GetMapping("/providers/{id}/quota-rules")
+    public Mono<List<QuotaRule>> quotaRules(@PathVariable String id) {
+        return Mono.fromCallable(() -> quotaRules.list(id)).subscribeOn(scheduler);
+    }
+
+    @PutMapping("/providers/{id}/quota-rules")
+    public Mono<List<QuotaRule>> saveQuotaRules(@PathVariable String id, @Valid @RequestBody List<QuotaRuleInput> input) {
+        return Mono.fromCallable(() -> quotaRules.save(id, input)).subscribeOn(scheduler);
     }
 
     @GetMapping("/schemes")

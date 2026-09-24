@@ -21,16 +21,20 @@ public final class AttemptRepository {
     private final Database database;
     private final ProviderRepository providers;
     private final ProviderRuntimeRepository runtime;
+    private final QuotaRuleRepository quotas;
     private final Clock clock;
 
     public AttemptRepository(Database database, ProviderRepository providers, Clock clock) {
         this.database = database;
         this.providers = providers;
         this.runtime = new ProviderRuntimeRepository();
+        this.quotas = new QuotaRuleRepository(database);
         this.clock = clock;
     }
 
     public record Admission(String id, Provider provider, Instant startedAt) { }
+
+    public record AdmissionDecision(Admission admission, String rejectionCode) { }
 
     public record Attempt(String id, String requestId, String providerId, String providerName, String model,
                           String startedAt, String endedAt, String status, Integer httpStatus,
@@ -68,16 +72,25 @@ public final class AttemptRepository {
     }
 
     public Admission admit(String providerId, String schemeId, String requestId, String model, long requestBytes) {
+        return tryAdmit(providerId, schemeId, requestId, model, requestBytes).admission();
+    }
+
+    public AdmissionDecision tryAdmit(String providerId, String schemeId, String requestId, String model, long requestBytes) {
         return database.transaction(connection -> {
             Provider provider = providers.find(connection, providerId);
             if (!provider.enabled()) {
-                return null;
+                return new AdmissionDecision(null, "PROVIDER_DISABLED");
             }
             String day = LocalDate.now(clock).toString();
             Instant now = clock.instant();
             ProviderRuntimeState runtimeState = runtime.find(connection, providerId);
             if (runtimeState.inCooldown(now.toString())) {
-                return null;
+                return new AdmissionDecision(null, "PROVIDER_COOLDOWN");
+            }
+            QuotaRuleRepository.Decision quota = quotas.evaluate(connection, providerId, now);
+            if (!quota.allowed()) {
+                String code = "REJECT_REQUEST".equals(quota.action()) ? "QUOTA_REJECTED" : "QUOTA_EXHAUSTED";
+                return new AdmissionDecision(null, code);
             }
             // Admission and reservation share the same SQLite write transaction.
             try (var statement = connection.prepareStatement("SELECT COUNT(*),COALESCE(SUM(charged_tokens),0),"
@@ -94,7 +107,7 @@ public final class AttemptRepository {
                     if (inFlight >= provider.maxConcurrency()
                             || (provider.dailyRequestLimit() > 0 && requests >= provider.dailyRequestLimit())
                             || (provider.dailyTokenLimit() > 0 && charged + provider.tokenReservation() > provider.dailyTokenLimit())) {
-                        return null;
+                        return new AdmissionDecision(null, "PROVIDER_QUOTA_EXHAUSTED");
                     }
                 }
             }
@@ -125,7 +138,7 @@ public final class AttemptRepository {
                 statement.setLong(12, Math.max(0, requestBytes));
                 statement.executeUpdate();
             }
-            return new Admission(id, provider, now);
+            return new AdmissionDecision(new Admission(id, provider, now), null);
         });
     }
 

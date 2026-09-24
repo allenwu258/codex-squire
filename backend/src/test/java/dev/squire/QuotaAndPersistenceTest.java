@@ -8,6 +8,9 @@ import dev.squire.scheme.SchemeInput;
 import dev.squire.scheme.SchemeRepository;
 import dev.squire.security.LocalSecrets;
 import dev.squire.usage.AttemptRepository;
+import dev.squire.usage.QuotaRule;
+import dev.squire.usage.QuotaRuleInput;
+import dev.squire.usage.QuotaRuleRepository;
 import dev.squire.usage.Usage;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -157,7 +160,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(4);
+            assertThat(migrationCount).isEqualTo(5);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
@@ -222,9 +225,34 @@ class QuotaAndPersistenceTest {
         }
     }
 
+    @Test
+    void evaluatesQuotaRulesInsideAdmissionTransaction() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
+            ProviderRepository providers = new ProviderRepository(database, secrets, CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            new QuotaRuleRepository(database).save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.TOTAL_TOKENS,
+                    QuotaRule.WindowType.DAY, 1, "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var admission = attempts.admit(id, "scheme", "request", "model");
+            assertThat(admission).isNotNull();
+            assertThat(attempts.admit(id, "scheme", "second", "model")).isNull();
+            new QuotaRuleRepository(database).save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.TOTAL_TOKENS,
+                    QuotaRule.WindowType.DAY, 1, "UTC", 100, QuotaRule.Action.REJECT_REQUEST, true, 0)));
+            attempts.finish(admission, new AttemptRepository.Settlement("SUCCEEDED", 200,
+                    new Usage(2, 98, 0), false, "COMPLETED", "DELIVERED"));
+            assertThat(attempts.tryAdmit(id, "scheme", "third", "model", 0).rejectionCode())
+                    .isEqualTo("QUOTA_REJECTED");
+        } finally {
+            database.close();
+        }
+    }
+
     private ProviderInput input(long requests, long tokens) {
         return new ProviderInput("provider", "https://api.example.com/v1", "upstream-key", true, requests, tokens, 128, 100);
     }
 }
+
 
 

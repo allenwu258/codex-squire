@@ -102,8 +102,11 @@ public final class GatewayService {
         Set<String> nextAttempted = new HashSet<>(attempted);
         nextAttempted.add(providerId);
         Mono<AttemptContext> resource = Mono.fromCallable(() -> {
-            AttemptRepository.Admission admission = routing.admit(route, providerId, requestId, model, body.length);
-            return admission == null ? null : new AttemptContext(admission);
+            AttemptRepository.AdmissionDecision decision = routing.admit(route, providerId, requestId, model, body.length);
+            if (decision.admission() == null && "QUOTA_REJECTED".equals(decision.rejectionCode())) {
+                throw new ApiException(429, "QUOTA_EXCEEDED", "A quota rule rejected this request");
+            }
+            return decision.admission() == null ? null : new AttemptContext(decision.admission());
         }).subscribeOn(databaseScheduler).doOnDiscard(AttemptContext.class, context ->
                 databaseScheduler.schedule(() -> {
                     OutcomeResolver.FailureOutcome outcome = outcomes.cancelled(context.upstreamOutcome);
