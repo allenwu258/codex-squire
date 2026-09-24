@@ -163,7 +163,24 @@ class GatewayIntegrationTest {
     void rejectsRedirectWithoutSendingCredentialsToAnotherHost() {
         MODES.put("a", "redirect");
         scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
-        response(false).expectStatus().isEqualTo(502);
+        response(false).expectStatus().isEqualTo(502).expectBody()
+                .jsonPath("$.error.code").isEqualTo("UPSTREAM_REDIRECT");
+        settled().expectBody().jsonPath("$.failures").isEqualTo(1);
+    }
+
+    @Test
+    void reportsCredentialDecryptionFailureWithoutCallingItAnUpstreamFailure() {
+        String id = provider("a", 0, 0, 4);
+        database.transaction(connection -> {
+            try (var statement = connection.prepareStatement("UPDATE providers SET encrypted_key='corrupt' WHERE id=?")) {
+                statement.setString(1, id);
+                statement.executeUpdate();
+            }
+            return null;
+        });
+        scheme("ORDERED", List.of(id));
+        response(false).expectStatus().isEqualTo(500).expectBody()
+                .jsonPath("$.error.code").isEqualTo("CREDENTIAL_DECRYPTION_FAILED");
         settled().expectBody().jsonPath("$.failures").isEqualTo(1);
     }
 

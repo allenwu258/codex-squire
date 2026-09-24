@@ -9,6 +9,7 @@ import io.netty.channel.ChannelOption;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.concurrent.TimeoutException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -22,6 +23,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.ServerWebExchange;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
@@ -29,6 +32,7 @@ import reactor.netty.http.client.HttpClient;
 
 @Service
 public final class GatewayService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(GatewayService.class);
     private static final List<String> REQUEST_HEADERS = List.of("OpenAI-Beta", "originator", "version",
             "session_id", "conversation_id", "x-codex-turn-state", "x-codex-turn-metadata");
     private static final List<String> RESPONSE_HEADERS = List.of("x-request-id", "openai-processing-ms", "retry-after", "x-codex-turn-state");
@@ -63,8 +67,7 @@ public final class GatewayService {
         exchange.getResponse().getHeaders().set("x-squire-request-id", requestId);
         return Mono.fromCallable(routing::route).subscribeOn(databaseScheduler)
                 .flatMap(route -> next(route, Set.of(), requestId, model, body, exchange)).then()
-                .onErrorMap(error -> !(error instanceof ApiException) && !exchange.getResponse().isCommitted(),
-                        error -> new ApiException(502, "UPSTREAM_FAILURE", "Upstream connection failed; the request was not replayed"));
+                .onErrorMap(UpstreamTransportException.class, error -> error.apiException());
     }
 
     private Mono<Outcome> next(RoutingService.Route route, Set<String> attempted, String requestId, String model,
@@ -111,7 +114,9 @@ public final class GatewayService {
                 })
                 .bodyValue(body)
                 .exchangeToMono(response -> relay(context, response, exchange, hasNext))
-                .timeout(totalTimeout);
+                .timeout(totalTimeout)
+                .onErrorMap(error -> !(error instanceof ApiException) && !(error instanceof UpstreamTransportException),
+                        error -> new UpstreamTransportException(error));
     }
 
     private Mono<Outcome> relay(AttemptContext context, ClientResponse upstream, ServerWebExchange exchange, boolean hasNext) {
@@ -167,7 +172,7 @@ public final class GatewayService {
     }
 
     private Mono<Void> settle(AttemptContext context) {
-        return settleWith(context, context.status);
+        return safeSettle(context);
     }
 
     private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
@@ -176,7 +181,7 @@ public final class GatewayService {
         context.status = outcome.status();
         context.upstreamOutcome = outcome.upstreamOutcome();
         context.deliveryOutcome = outcome.deliveryOutcome();
-        return settle(context);
+        return safeSettle(context);
     }
 
     private Mono<Void> settleOnCancel(AttemptContext context) {
@@ -184,7 +189,7 @@ public final class GatewayService {
         context.status = outcome.status();
         context.upstreamOutcome = outcome.upstreamOutcome();
         context.deliveryOutcome = outcome.deliveryOutcome();
-        return settle(context);
+        return safeSettle(context);
     }
 
     private Mono<Void> settleWith(AttemptContext context, String status) {
@@ -194,6 +199,13 @@ public final class GatewayService {
                                 context.inspector == null ? null : context.inspector.usage(), context.rejected,
                                 context.upstreamOutcome, context.deliveryOutcome)))
                 .subscribeOn(databaseScheduler).then();
+    }
+
+    private Mono<Void> safeSettle(AttemptContext context) {
+        return settleWith(context, context.status).onErrorResume(error -> {
+            LOGGER.error("Unable to settle attempt {}: {}", context.admission.id(), error.getMessage());
+            return Mono.empty();
+        });
     }
 
     private String validate(byte[] body) {
@@ -225,6 +237,21 @@ public final class GatewayService {
 
         private AttemptContext(AttemptRepository.Admission admission) {
             this.admission = admission;
+        }
+    }
+
+    private static final class UpstreamTransportException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private UpstreamTransportException(Throwable cause) {
+            super(cause);
+        }
+
+        private ApiException apiException() {
+            boolean timeout = getCause() instanceof TimeoutException;
+            return new ApiException(502, timeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_CONNECTION_ERROR",
+                    timeout ? "The upstream provider did not respond before the deadline"
+                            : "Upstream connection failed; the request was not replayed");
         }
     }
 }
