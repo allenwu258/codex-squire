@@ -180,6 +180,21 @@ test('quota editor cannot overwrite rules before a successful load', async ({ pa
   await expect(dialog.getByRole('spinbutton', { name: '阈值', exact: true })).toHaveValue('7');
 });
 
+test('slow management refresh completes without being cancelled by polling', async ({ page }) => {
+  await login(page);
+  let intercepted = 0;
+  await page.route('**/api/statistics', async route => {
+    intercepted++;
+    const response = await route.fetch();
+    const statistics = await response.json();
+    await new Promise(resolve => setTimeout(resolve, 6200));
+    await route.fulfill({ response, json: { ...statistics, requests: 4321 } });
+  });
+  await page.getByRole('button', { name: '刷新' }).click();
+  await expect(page.getByText('4,321', { exact: true })).toBeVisible({ timeout: 12000 });
+  expect(intercepted).toBe(1);
+});
+
 test('installed Codex CLI completes a turn through the gateway and mock SSE upstream', async ({ request }) => {
   const adminToken = fs.readFileSync(path.join(process.env.SQUIRE_E2E_DATA!, 'admin.token'), 'utf8').trim();
   const headers = { Authorization: `Bearer ${adminToken}` };

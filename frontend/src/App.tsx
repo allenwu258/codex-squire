@@ -48,13 +48,24 @@ export default function App() {
       if (controller.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 401) { sessionStorage.removeItem(TOKEN_KEY); setToken(''); setData(null); }
       if (mounted.current && sequence === refreshSequence.current) setError(errorMessage(failure));
-    } finally { if (mounted.current && sequence === refreshSequence.current) setBusy(false); }
+    } finally {
+      if (refreshController.current === controller) refreshController.current = null;
+      if (mounted.current && sequence === refreshSequence.current) setBusy(false);
+    }
   }, [api, token]);
   useEffect(() => {
     mounted.current = true;
-    void refresh();
-    const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 5000);
-    return () => { mounted.current = false; clearInterval(timer); refreshController.current?.abort(); };
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      if (document.visibilityState === 'visible' && !refreshController.current) await refresh();
+      if (!stopped) timer = setTimeout(() => { void poll(); }, 5000);
+    }
+    void poll();
+    return () => {
+      stopped = true; mounted.current = false; clearTimeout(timer);
+      refreshController.current?.abort(); refreshController.current = null;
+    };
   }, [refresh]);
   useEffect(() => {
     const handler = () => setPage(location.hash.slice(1) || 'overview');

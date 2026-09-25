@@ -13,7 +13,7 @@ export class ApiClient {
       headers: { Authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(version === undefined ? {} : { 'If-Match': `"${version}"` }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ?? AbortSignal.timeout(15000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => null);
