@@ -42,25 +42,24 @@ public final class ProviderProbeService {
                 return Mono.error(new ApiException(429, "PROBE_BUSY", "Provider probe capacity is currently full"));
             }
             return Mono.fromCallable(() -> providers.find(providerId)).flatMap(provider -> {
-            String endpoint = provider.baseUrl() + (URI.create(provider.baseUrl()).getPath().isEmpty()
-                    ? "/v1/responses" : "/responses");
-            return request(provider, endpoint, model, false)
-                    .flatMap(json -> request(provider, endpoint, model, true)
-                            .map(sse -> persist(provider.id(), model, json, sse)))
-                    .onErrorResume(error -> {
-                        ProbeResult failed = new ProbeResult(provider.id(), model, false, false, "UNKNOWN",
-                                Instant.now().toString(), error.getMessage());
-                        capabilities.save(new ProviderCapability(provider.id(), model, false, false, "UNKNOWN",
-                                failed.lastProbeAt(), failed.error()));
-                        return Mono.just(failed);
-                    });
+                String endpoint = provider.baseUrl() + (URI.create(provider.baseUrl()).getPath().isEmpty()
+                        ? "/v1/responses" : "/responses");
+                return request(provider, endpoint, model, false).flatMap(json -> {
+                    if (json.transientFailure()) {
+                        return Mono.fromCallable(() -> preserveOnFailure(provider.id(), model, json.errorMessage()));
+                    }
+                    return request(provider, endpoint, model, true)
+                            .map(sse -> sse.transientFailure()
+                                    ? preserveOnFailure(provider.id(), model, sse.errorMessage())
+                                    : persist(provider.id(), model, json, sse));
+                });
             }).doFinally(signal -> probeSlots.release());
         });
     }
 
     private Mono<Observation> request(Provider provider, String endpoint, String model, boolean stream) {
         Map<String, Object> body = Map.of("model", model, "input", "Reply with OK.", "stream", stream,
-                "store", false, "max_output_tokens", 1);
+                "store", false, "max_output_tokens", 16);
         return client.post().uri(endpoint).headers(headers -> {
             headers.setBearerAuth(secrets.decrypt(provider.encryptedKey()));
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -73,15 +72,18 @@ public final class ProviderProbeService {
                     UsageInspector inspector = new UsageInspector(mapper, eventStream);
                     inspector.accept(value.getBytes(StandardCharsets.UTF_8));
                     inspector.end();
-                    return new Observation(response.statusCode().value(), inspector.resultStatus(),
-                            inspector.usage() != null, eventStream);
-                })).timeout(Duration.ofSeconds(30));
+                    return new Observation(response.statusCode().value(), inspector.observedTerminalStatus(),
+                            inspector.usage() != null, eventStream, null);
+                })).timeout(Duration.ofSeconds(30))
+                .onErrorResume(error -> error instanceof ApiException ? Mono.error(error)
+                        : Mono.just(new Observation(0, null, false, false,
+                                error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage())));
     }
 
     private ProbeResult persist(String providerId, String model, Observation json, Observation sse) {
-        ProbeResult result = new ProbeResult(providerId, model, json.status() < 400 && !json.eventStream()
-                && "SUCCEEDED".equals(json.terminalStatus()), sse.status() < 400 && sse.eventStream()
-                && "SUCCEEDED".equals(sse.terminalStatus()),
+        ProbeResult result = new ProbeResult(providerId, model, json.status() >= 200 && json.status() < 300
+                && !json.eventStream() && json.validTerminal(), sse.status() >= 200 && sse.status() < 300
+                && sse.eventStream() && sse.validTerminal(),
                 json.hasUsage() || sse.hasUsage() ? "REPORTED" : "NONE", Instant.now().toString(),
                 json.status() >= 400 ? "Non-success HTTP status from non-stream probe" : null);
         capabilities.save(new ProviderCapability(result.providerId(), result.model(), result.supportsResponses(),
@@ -89,7 +91,32 @@ public final class ProviderProbeService {
         return result;
     }
 
-    private record Observation(int status, String terminalStatus, boolean hasUsage, boolean eventStream) { }
+    private ProbeResult preserveOnFailure(String providerId, String model, String error) {
+        String now = Instant.now().toString();
+        ProviderCapability previous = capabilities.list(providerId).stream()
+                .filter(value -> value.model().equals(model)).findFirst().orElse(null);
+        if (previous == null) {
+            return new ProbeResult(providerId, model, false, false, "UNKNOWN", now, error);
+        }
+        capabilities.save(new ProviderCapability(providerId, model, previous.supportsResponses(),
+                previous.supportsSse(), previous.usageSupport(), now, error));
+        return new ProbeResult(providerId, model, previous.supportsResponses(), previous.supportsSse(),
+                previous.usageSupport(), now, error);
+    }
+
+    private record Observation(int status, String terminalStatus, boolean hasUsage, boolean eventStream, String error) {
+        private boolean validTerminal() {
+            return "SUCCEEDED".equals(terminalStatus) || "INCOMPLETE".equals(terminalStatus);
+        }
+
+        private boolean transientFailure() {
+            return error != null || status == 429 || status >= 500;
+        }
+
+        private String errorMessage() {
+            return error == null ? "Probe received HTTP " + status : error;
+        }
+    }
 
     public record ProbeResult(String providerId, String model, boolean supportsResponses, boolean supportsSse,
                               String usageSupport, String lastProbeAt, String error) { }

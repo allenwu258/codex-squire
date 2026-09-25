@@ -120,5 +120,18 @@ function ProbeDialog({ provider, api, close }: { provider: Provider; api: ApiCli
       setCapabilities(await api.capabilities(provider.id));
     } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
   }
-  return <Modal title={`探测 ${provider.name}`} close={close}><form onSubmit={submit}><fieldset disabled={busy} className="form-body"><label>模型 ID<input required maxLength={200} value={model} onChange={event => setModel(event.target.value)} placeholder="上游支持的模型 ID" /></label>{error && <ErrorNotice message={error} />}{result && <div className="probe-capability"><Badge tone={result.supportsResponses ? 'green' : 'amber'}>Responses {result.supportsResponses ? '支持' : '不支持'}</Badge><Badge tone={result.supportsSse ? 'green' : 'amber'}>SSE {result.supportsSse ? '支持' : '不支持'}</Badge><Badge>{result.usageSupport === 'REPORTED' ? 'Usage 已返回' : 'Usage 未确认'}</Badge>{result.error && <p className="muted">{result.error}</p>}</div>}{capabilities.length > 0 && <div className="capability-table"><h3>已记录能力</h3><div className="table-wrap"><table><thead><tr><th>模型</th><th>Responses</th><th>SSE</th><th>Usage</th><th>最后探测</th></tr></thead><tbody>{capabilities.map(capability => <tr key={capability.model}><td><code>{capability.model}</code></td><td>{capability.supportsResponses ? '支持' : '不支持'}</td><td>{capability.supportsSse ? '支持' : '不支持'}</td><td>{capability.usageSupport === 'REPORTED' ? '已返回' : '未确认'}</td><td>{new Date(capability.lastProbeAt).toLocaleString('zh-CN', { hour12: false })}</td></tr>)}</tbody></table></div></div>}</fieldset><footer><button type="button" className="button" disabled={busy} onClick={close}>关闭</button><button className="button primary" disabled={busy}>{busy ? '探测中' : '开始探测'}<Activity size={16} /></button></footer></form></Modal>;
+  return <Modal title={`探测 ${provider.name}`} close={close}><form onSubmit={submit}><fieldset disabled={busy} className="form-body">
+    <label>模型 ID<input required maxLength={200} value={model} onChange={event => setModel(event.target.value)} placeholder="上游支持的模型 ID" /></label>
+    {error && <ErrorNotice message={error} />}
+    {result && <div className="probe-capability">
+      {result.error && <p className="muted">本次探测失败：{result.error}</p>}
+      {result.usageSupport === 'UNKNOWN' ? <Badge tone="amber">能力未确认</Badge> : <>
+        {result.error && <Badge tone="amber">显示上次确认结果</Badge>}
+        <Badge tone={result.supportsResponses ? 'green' : 'amber'}>Responses {result.supportsResponses ? '支持' : '不支持'}</Badge>
+        <Badge tone={result.supportsSse ? 'green' : 'amber'}>SSE {result.supportsSse ? '支持' : '不支持'}</Badge>
+        <Badge>{result.usageSupport === 'REPORTED' ? 'Usage 已返回' : 'Usage 未确认'}</Badge>
+      </>}
+    </div>}
+    {capabilities.length > 0 && <div className="capability-table"><h3>已记录能力</h3><div className="table-wrap"><table><thead><tr><th>模型</th><th>Responses</th><th>SSE</th><th>Usage</th><th>最后探测</th></tr></thead><tbody>{capabilities.map(capability => <tr key={capability.model}><td><code>{capability.model}</code></td><td>{capability.supportsResponses ? '支持' : '不支持'}</td><td>{capability.supportsSse ? '支持' : '不支持'}</td><td>{capability.usageSupport === 'REPORTED' ? '已返回' : '未确认'}</td><td>{new Date(capability.lastProbeAt).toLocaleString('zh-CN', { hour12: false })}{capability.lastError && <small title={capability.lastError}>上次探测失败</small>}</td></tr>)}</tbody></table></div></div>}
+  </fieldset><footer><button type="button" className="button" disabled={busy} onClick={close}>关闭</button><button className="button primary" disabled={busy}>{busy ? '探测中' : '开始探测'}<Activity size={16} /></button></footer></form></Modal>;
 }

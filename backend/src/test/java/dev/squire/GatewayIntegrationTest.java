@@ -56,6 +56,15 @@ class GatewayIntegrationTest {
                 }
                 return response.header("Content-Type", "application/json").sendString(Mono.just(JSON)).then();
             }
+            if (mode.equals("probe-incomplete")) {
+                if (body.contains("\"stream\":true")) {
+                    return response.header("Content-Type", "text/event-stream")
+                            .sendString(Mono.just("event: response.incomplete\n"
+                                    + "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n")).then();
+                }
+                return response.header("Content-Type", "application/json")
+                        .sendString(Mono.just("{\"id\":\"resp_probe\",\"status\":\"incomplete\"}")).then();
+            }
             if (mode.equals("429") || mode.equals("400") || mode.equals("401") || mode.equals("503")) {
                 return response.status(Integer.parseInt(mode)).header("Content-Type", "application/json")
                         .sendString(Mono.just("{\"error\":{\"message\":\"upstream rejection\"}}")).then();
@@ -326,6 +335,31 @@ class GatewayIntegrationTest {
         assertThat(CALLS.get("a")).isNull();
         assertThat(CALLS.get("b").get()).isEqualTo(6);
         assertThat(CALLS.get("c").get()).isEqualTo(6);
+    }
+
+    @Test
+    void probeAcceptsExplicitIncompleteAsProtocolSupport() {
+        MODES.put("a", "probe-incomplete");
+        String id = provider("a", 0, 0, 4);
+        admin.post().uri("/api/providers/" + id + "/probe?model=test-model").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.supportsResponses").isEqualTo(true)
+                .jsonPath("$.supportsSse").isEqualTo(true);
+    }
+
+    @Test
+    void transientProbeFailurePreservesPreviousCapabilities() {
+        MODES.put("a", "probe");
+        String id = provider("a", 0, 0, 4);
+        admin.post().uri("/api/providers/" + id + "/probe?model=test-model").exchange().expectStatus().isOk();
+        MODES.put("a", "503");
+        admin.post().uri("/api/providers/" + id + "/probe?model=test-model").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.supportsResponses").isEqualTo(true)
+                .jsonPath("$.supportsSse").isEqualTo(true)
+                .jsonPath("$.error").isNotEmpty();
+        admin.get().uri("/api/providers/" + id + "/capabilities").exchange().expectBody()
+                .jsonPath("$[0].supportsResponses").isEqualTo(true)
+                .jsonPath("$[0].supportsSse").isEqualTo(true)
+                .jsonPath("$[0].lastError").isNotEmpty();
     }
 
     @Test
