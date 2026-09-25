@@ -47,6 +47,12 @@ class GatewayIntegrationTest {
             BODIES.put(source, body);
             assertThat(request.requestHeaders().get(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer test-upstream-secret");
             String mode = MODES.getOrDefault(source, "json");
+            if (mode.equals("probe")) {
+                if (body.contains("\"stream\":true")) {
+                    return response.header("Content-Type", "text/event-stream").sendString(Mono.just(TERMINAL)).then();
+                }
+                return response.header("Content-Type", "application/json").sendString(Mono.just(JSON)).then();
+            }
             if (mode.equals("429") || mode.equals("400") || mode.equals("503")) {
                 return response.status(Integer.parseInt(mode)).header("Content-Type", "application/json")
                         .sendString(Mono.just("{\"error\":{\"message\":\"upstream rejection\"}}")).then();
@@ -193,7 +199,7 @@ class GatewayIntegrationTest {
 
     @Test
     void probesResponsesAndPersistsProviderCapabilities() {
-        MODES.put("a", "sse");
+        MODES.put("a", "probe");
         String id = provider("a", 0, 0, 4);
         admin.post().uri("/api/providers/" + id + "/probe?model=test-model").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.supportsResponses").isEqualTo(true)
@@ -263,6 +269,25 @@ class GatewayIntegrationTest {
             settled();
         }
         assertThat(CALLS.get("a")).isNull();
+        assertThat(CALLS.get("b").get()).isEqualTo(6);
+        assertThat(CALLS.get("c").get()).isEqualTo(6);
+    }
+
+    @Test
+    void rebalancesWeightsAfterQuotaAdmissionFailure() {
+        String a = provider("a", 1, 0, 4);
+        String b = provider("b", 0, 0, 4);
+        String c = provider("c", 0, 0, 4);
+        JsonNode result = admin.post().uri("/api/schemes").bodyValue(Map.of("name", "quota-filtered-weighted", "strategy", "BALANCED",
+                "members", List.of(Map.of("providerId", a, "weight", 100), Map.of("providerId", b, "weight", 1),
+                        Map.of("providerId", c, "weight", 1))))
+                .exchange().expectStatus().isCreated().expectBody(JsonNode.class).returnResult().getResponseBody();
+        activate(result.path("id").asText());
+        for (int index = 0; index < 13; index++) {
+            response(false).expectStatus().isOk();
+            settled();
+        }
+        assertThat(CALLS.get("a").get()).isEqualTo(1);
         assertThat(CALLS.get("b").get()).isEqualTo(6);
         assertThat(CALLS.get("c").get()).isEqualTo(6);
     }
@@ -405,5 +430,3 @@ class GatewayIntegrationTest {
         }
     }
 }
-
-

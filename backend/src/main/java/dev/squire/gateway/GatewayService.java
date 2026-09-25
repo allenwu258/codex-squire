@@ -149,7 +149,7 @@ public final class GatewayService {
         int status = upstream.statusCode().value();
         context.httpStatus = status;
         context.upstreamRequestId = upstream.headers().asHttpHeaders().getFirst("x-request-id");
-        context.rejected = status >= 400 && status < 500;
+        context.rejected = status >= 300 && status < 500;
         // Only explicit rate rejection is replayable by default. Other failures may have executed work.
         if (status == 429 && hasNext) {
             OutcomeResolver.ResponseOutcome outcome = outcomes.rateLimited();

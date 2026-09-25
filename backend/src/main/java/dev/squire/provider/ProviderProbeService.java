@@ -20,7 +20,8 @@ public final class ProviderProbeService {
     private final LocalSecrets secrets;
     private final CapabilityRepository capabilities;
     private final ObjectMapper mapper;
-    private final WebClient client = WebClient.builder().build();
+    private final WebClient client = WebClient.builder()
+            .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(1024 * 1024)).build();
 
     public ProviderProbeService(ProviderRepository providers, LocalSecrets secrets, CapabilityRepository capabilities,
                                 ObjectMapper mapper) {
@@ -57,19 +58,23 @@ public final class ProviderProbeService {
             headers.setBearerAuth(secrets.decrypt(provider.encryptedKey()));
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.setAccept(java.util.List.of(MediaType.APPLICATION_JSON, MediaType.TEXT_EVENT_STREAM));
+            headers.set("X-Squire-Probe", "true");
         }).bodyValue(body).exchangeToMono(response -> response.bodyToMono(String.class).defaultIfEmpty("")
                 .map(value -> {
-                    UsageInspector inspector = new UsageInspector(mapper,
-                            MediaType.TEXT_EVENT_STREAM.isCompatibleWith(response.headers().contentType().orElse(MediaType.APPLICATION_JSON)));
+                    boolean eventStream = response.headers().contentType()
+                            .map(type -> MediaType.TEXT_EVENT_STREAM.isCompatibleWith(type)).orElse(false);
+                    UsageInspector inspector = new UsageInspector(mapper, eventStream);
                     inspector.accept(value.getBytes(StandardCharsets.UTF_8));
                     inspector.end();
-                    return new Observation(response.statusCode().value(), inspector.resultStatus(), inspector.usage() != null);
+                    return new Observation(response.statusCode().value(), inspector.resultStatus(),
+                            inspector.usage() != null, eventStream);
                 })).timeout(Duration.ofSeconds(30));
     }
 
     private ProbeResult persist(String providerId, String model, Observation json, Observation sse) {
-        ProbeResult result = new ProbeResult(providerId, model, json.status() < 400 && "SUCCEEDED".equals(json.terminalStatus()),
-                sse.status() < 400 && "SUCCEEDED".equals(sse.terminalStatus()),
+        ProbeResult result = new ProbeResult(providerId, model, json.status() < 400 && !json.eventStream()
+                && "SUCCEEDED".equals(json.terminalStatus()), sse.status() < 400 && sse.eventStream()
+                && "SUCCEEDED".equals(sse.terminalStatus()),
                 json.hasUsage() || sse.hasUsage() ? "REPORTED" : "NONE", Instant.now().toString(),
                 json.status() >= 400 ? "Non-success HTTP status from non-stream probe" : null);
         capabilities.save(new ProviderCapability(result.providerId(), result.model(), result.supportsResponses(),
@@ -77,7 +82,7 @@ public final class ProviderProbeService {
         return result;
     }
 
-    private record Observation(int status, String terminalStatus, boolean hasUsage) { }
+    private record Observation(int status, String terminalStatus, boolean hasUsage, boolean eventStream) { }
 
     public record ProbeResult(String providerId, String model, boolean supportsResponses, boolean supportsSse,
                               String usageSupport, String lastProbeAt, String error) { }

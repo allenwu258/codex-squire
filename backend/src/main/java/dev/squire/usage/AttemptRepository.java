@@ -205,7 +205,7 @@ public final class AttemptRepository {
 
     private boolean runtimeFailure(Settlement settlement) {
         return "RATE_LIMITED".equals(settlement.status()) || "TRANSPORT_ERROR".equals(settlement.status())
-                || "INCOMPLETE".equals(settlement.status())
+                || "INCOMPLETE".equals(settlement.status()) || "FAILED".equals(settlement.status())
                 || settlement.httpStatus() != null && settlement.httpStatus() >= 500;
     }
 

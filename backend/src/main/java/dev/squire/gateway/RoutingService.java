@@ -7,9 +7,9 @@ import dev.squire.scheme.SchemeRepository;
 import dev.squire.usage.AttemptRepository;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -58,7 +58,8 @@ public final class RoutingService {
 
     private String weightedProvider(String schemeId, List<Scheme.Member> members) {
         int totalWeight = members.stream().mapToInt(Scheme.Member::weight).sum();
-        long ticket = Math.floorMod(sequence(schemeId).getAndIncrement(), totalWeight);
+        String candidateKey = schemeId + "|" + members.stream().map(Scheme.Member::providerId).collect(Collectors.joining(","));
+        long ticket = Math.floorMod(sequence(candidateKey).getAndIncrement(), totalWeight);
         for (Scheme.Member member : members) {
             if (ticket < member.weight()) {
                 return member.providerId();
