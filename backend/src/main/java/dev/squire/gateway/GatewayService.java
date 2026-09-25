@@ -213,6 +213,10 @@ public final class GatewayService {
             OutcomeResolver.ResponseOutcome outcome = outcomes.response(status, context.inspector.resultStatus());
             context.upstreamOutcome = outcome.upstreamOutcome();
             context.status = outcome.status();
+            if (status < 400 && context.inspector.observedTerminalStatus() == null) {
+                context.errorCode = "UPSTREAM_TERMINAL_MISSING";
+                context.failureStage = "RESPONSE_BODY";
+            }
         });
         // Flush each upstream chunk; buffering the whole Flux breaks interactive SSE delivery.
         return exchange.getResponse().writeAndFlushWith(content.map(Mono::just))

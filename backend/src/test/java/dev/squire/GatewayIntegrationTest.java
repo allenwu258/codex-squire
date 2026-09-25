@@ -82,6 +82,11 @@ class GatewayIntegrationTest {
                 return response.header("Content-Type", "text/event-stream")
                         .sendString(Mono.just("data: {\"type\":\"response.created\"}\n\n")).then();
             }
+            if (mode.equals("incomplete")) {
+                return response.header("Content-Type", "text/event-stream")
+                        .sendString(Mono.just("event: response.incomplete\n"
+                                + "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n")).then();
+            }
             return response.header("Content-Type", "application/json").header("x-request-id", "upstream-id")
                     .sendString(Mono.just(JSON)).then();
         });
@@ -317,6 +322,23 @@ class GatewayIntegrationTest {
         settled().expectBody().jsonPath("$.chargedTokens").isEqualTo(100)
                 .jsonPath("$.inputTokens").isEqualTo(0).jsonPath("$.uncertainRequests").isEqualTo(1);
         admin.get().uri("/api/attempts").exchange().expectBody().jsonPath("$[0].status").isEqualTo("INCOMPLETE");
+        admin.get().uri("/api/provider-runtime").exchange().expectBody()
+                .jsonPath("$[0].health").isEqualTo("UNHEALTHY");
+    }
+
+    @Test
+    void explicitIncompleteResponseDoesNotCoolDownProvider() {
+        MODES.put("a", "incomplete");
+        scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
+        response(true).expectStatus().isOk().expectBody(String.class);
+        settled();
+        admin.get().uri("/api/attempts").exchange().expectBody()
+                .jsonPath("$[0].status").isEqualTo("INCOMPLETE")
+                .jsonPath("$[0].errorCode").value(value -> assertThat(value).isNull());
+        admin.get().uri("/api/provider-runtime").exchange().expectBody()
+                .jsonPath("$[0].health").isEqualTo("READY")
+                .jsonPath("$[0].cooldownUntil").value(value -> assertThat(value).isNull());
+        response(true).expectStatus().isOk();
     }
 
     @Test

@@ -194,7 +194,8 @@ public final class AttemptRepository {
                 statement.setString(16, settlement.upstreamRequestId());
                 statement.setString(17, admission.id());
                 if (statement.executeUpdate() > 0) {
-                    if ("COMPLETED".equals(settlement.upstreamOutcome())) {
+                    if ("COMPLETED".equals(settlement.upstreamOutcome())
+                            || "INCOMPLETE".equals(settlement.upstreamOutcome()) && settlement.errorCode() == null) {
                         runtime.markSuccess(connection, admission.provider().id(), endedAt,
                                 Math.max(0, Duration.between(admission.startedAt(), endedAt).toMillis()), settlement.httpStatus());
                     } else if (runtimeFailure(settlement)) {
@@ -211,7 +212,8 @@ public final class AttemptRepository {
 
     private boolean runtimeFailure(Settlement settlement) {
         return "RATE_LIMITED".equals(settlement.status()) || "TRANSPORT_ERROR".equals(settlement.status())
-                || "INCOMPLETE".equals(settlement.status()) || "FAILED".equals(settlement.status())
+                || "INCOMPLETE".equals(settlement.status()) && settlement.errorCode() != null
+                || "FAILED".equals(settlement.status())
                 || settlement.httpStatus() != null && (settlement.httpStatus() == 401
                         || settlement.httpStatus() == 403 || settlement.httpStatus() == 429)
                 || settlement.httpStatus() != null && settlement.httpStatus() >= 500;
