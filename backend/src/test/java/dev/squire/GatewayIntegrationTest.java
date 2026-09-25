@@ -78,6 +78,9 @@ class GatewayIntegrationTest {
                         Mono.just(TERMINAL), Mono.delay(Duration.ofSeconds(30)).map(ignored -> "data: {\"type\":\"response.created\"}\n\n"))
                         .map(value -> Mono.just(io.netty.buffer.Unpooled.copiedBuffer(value, java.nio.charset.StandardCharsets.UTF_8)))).then();
             }
+            if (mode.equals("timeout")) {
+                return Mono.delay(Duration.ofSeconds(10)).then(response.send().then());
+            }
             if (mode.equals("truncated")) {
                 return response.header("Content-Type", "text/event-stream")
                         .sendString(Mono.just("data: {\"type\":\"response.created\"}\n\n")).then();
@@ -104,6 +107,7 @@ class GatewayIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("squire.data-dir", DATA::toString);
+        registry.add("squire.upstream-total-seconds", () -> 3);
     }
 
     @BeforeEach
@@ -293,6 +297,26 @@ class GatewayIntegrationTest {
         assertThat(CALLS.get("a")).isNull();
         assertThat(CALLS.get("b").get()).isEqualTo(6);
         assertThat(CALLS.get("c").get()).isEqualTo(6);
+    }
+
+    @Test
+    void timeoutUsesSameCodeInClientAttemptAndLogicalRequest() {
+        MODES.put("a", "timeout");
+        scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
+        response(false).expectStatus().isEqualTo(502).expectBody()
+                .jsonPath("$.error.code").isEqualTo("UPSTREAM_TIMEOUT");
+        settled();
+        admin.get().uri("/api/attempts").exchange().expectBody()
+                .jsonPath("$[0].errorCode").isEqualTo("UPSTREAM_TIMEOUT")
+                .jsonPath("$[0].status").isEqualTo("TRANSPORT_ERROR");
+        database.read(connection -> {
+            try (var statement = connection.prepareStatement("SELECT final_outcome FROM gateway_requests");
+                    var row = statement.executeQuery()) {
+                assertThat(row.next()).isTrue();
+                assertThat(row.getString(1)).isEqualTo("UPSTREAM_TIMEOUT");
+            }
+            return null;
+        });
     }
 
     @Test

@@ -77,8 +77,12 @@ public final class GatewayService {
                         .subscribeOn(databaseScheduler)
                         .then(next(route, Set.of(), requestId, model, body, exchange)
                                 .flatMap(outcome -> finishRequest(requestId, outcome.name()).thenReturn(outcome))
-                                .onErrorResume(error -> finishRequest(requestId, errorCode(error))
-                                        .then(Mono.error(error)))))
+                                .onErrorResume(error -> {
+                                    Throwable classified = error instanceof UpstreamTransportException transport
+                                            ? transport.apiException() : error;
+                                    return finishRequest(requestId, errorCode(classified))
+                                            .then(Mono.error(classified));
+                                })))
                 .then()
                 .onErrorMap(UpstreamTransportException.class, error -> error.apiException())
                 .doFinally(signal -> {
@@ -234,7 +238,8 @@ public final class GatewayService {
 
     private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
         if (context.errorCode == null) {
-            context.errorCode = error instanceof ApiException api ? api.code() : "UPSTREAM_CONNECTION_ERROR";
+            context.errorCode = error instanceof UpstreamTransportException transport ? transport.apiException().code()
+                    : error instanceof ApiException api ? api.code() : "UPSTREAM_CONNECTION_ERROR";
             context.failureStage = context.httpStatus == null ? "CONNECT" : "RESPONSE_BODY";
         }
         OutcomeResolver.FailureOutcome outcome = outcomes.transport(context.status, context.upstreamOutcome,
@@ -343,10 +348,20 @@ public final class GatewayService {
         }
 
         private ApiException apiException() {
-            boolean timeout = getCause() instanceof TimeoutException;
+            boolean timeout = isTimeout(getCause());
             return new ApiException(502, timeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_CONNECTION_ERROR",
                     timeout ? "The upstream provider did not respond before the deadline"
                             : "Upstream connection failed; the request was not replayed");
+        }
+
+        private boolean isTimeout(Throwable error) {
+            for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                if (cause instanceof TimeoutException || cause instanceof java.net.SocketTimeoutException
+                        || cause instanceof io.netty.handler.timeout.ReadTimeoutException) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }
