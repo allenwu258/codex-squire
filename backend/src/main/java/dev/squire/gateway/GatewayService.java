@@ -11,6 +11,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.concurrent.TimeoutException;
 import java.util.HashSet;
 import java.util.List;
@@ -167,12 +170,14 @@ public final class GatewayService {
         context.httpStatus = status;
         context.upstreamRequestId = upstream.headers().asHttpHeaders().getFirst("x-request-id");
         context.rejected = status >= 300 && status < 500;
+        if (status == 429) {
+            context.retryAfterSeconds = parseRetryAfter(upstream.headers().asHttpHeaders().getFirst("Retry-After"));
+        }
         // Only explicit rate rejection is replayable by default. Other failures may have executed work.
         if (status == 429 && hasNext) {
             OutcomeResolver.ResponseOutcome outcome = outcomes.rateLimited();
             context.status = outcome.status();
             context.upstreamOutcome = outcome.upstreamOutcome();
-            context.retryAfterSeconds = parseRetryAfter(upstream.headers().asHttpHeaders().getFirst("Retry-After"));
             return upstream.releaseBody().thenReturn(Outcome.RETRY);
         }
         if (status >= 300 && status < 400) {
@@ -285,7 +290,12 @@ public final class GatewayService {
         try {
             return Math.min(3600, Math.max(1, Long.parseLong(value.trim())));
         } catch (NumberFormatException exception) {
-            return null;
+            try {
+                Instant deadline = ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+                return Math.min(3600, Math.max(1, Duration.between(Instant.now(), deadline).getSeconds() + 1));
+            } catch (DateTimeParseException ignored) {
+                return null;
+            }
         }
     }
 

@@ -7,6 +7,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -72,6 +75,12 @@ class GatewayIntegrationTest {
                         Mono.just("data: {\"type\":\"response.created\"}\n\n"),
                         Mono.delay(Duration.ofSeconds(30)).map(ignored -> TERMINAL))
                         .map(value -> Mono.just(io.netty.buffer.Unpooled.copiedBuffer(value, java.nio.charset.StandardCharsets.UTF_8)))).then();
+            }
+            if (mode.equals("429-retry") || mode.equals("429-date")) {
+                String retryAfter = mode.equals("429-retry") ? "120"
+                        : DateTimeFormatter.RFC_1123_DATE_TIME.format(Instant.now().plusSeconds(120).atZone(ZoneOffset.UTC));
+                return response.status(429).header("Retry-After", retryAfter)
+                        .sendString(Mono.just("{\"error\":{\"message\":\"upstream rejection\"}}")).then();
             }
             if (mode.equals("completed-slow")) {
                 return response.header("Content-Type", "text/event-stream").sendGroups(Flux.concat(
@@ -184,6 +193,26 @@ class GatewayIntegrationTest {
                     .jsonPath("$.error.message").isEqualTo("upstream rejection");
         }
         assertThat(CALLS).doesNotContainKey("b");
+    }
+
+    @Test
+    void finalRateRejectionHonorsRetryAfterSeconds() {
+        assertFinalRateRejectionCooldown("429-retry");
+    }
+
+    @Test
+    void finalRateRejectionHonorsRetryAfterDate() {
+        assertFinalRateRejectionCooldown("429-date");
+    }
+
+    private void assertFinalRateRejectionCooldown(String mode) {
+        MODES.put("a", mode);
+        scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
+        response(false).expectStatus().isEqualTo(429);
+        settled();
+        admin.get().uri("/api/provider-runtime").exchange().expectBody()
+                .jsonPath("$[0].cooldownUntil").value(value -> assertThat(Instant.parse((String) value))
+                        .isAfter(Instant.now().plusSeconds(90)));
     }
 
     @Test
