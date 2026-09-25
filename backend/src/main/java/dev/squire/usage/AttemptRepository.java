@@ -12,6 +12,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Repository;
@@ -89,6 +92,9 @@ public final class AttemptRepository {
             }
             QuotaRuleRepository.Decision quota = quotas.evaluate(connection, providerId, now);
             if (!quota.allowed()) {
+                if ("ENTER_COOLDOWN".equals(quota.action())) {
+                    runtime.enterCooldown(connection, providerId, now, quota.reason());
+                }
                 String code = "REJECT_REQUEST".equals(quota.action()) ? "QUOTA_REJECTED" : "QUOTA_EXHAUSTED";
                 return new AdmissionDecision(null, code);
             }
@@ -206,11 +212,25 @@ public final class AttemptRepository {
     private boolean runtimeFailure(Settlement settlement) {
         return "RATE_LIMITED".equals(settlement.status()) || "TRANSPORT_ERROR".equals(settlement.status())
                 || "INCOMPLETE".equals(settlement.status()) || "FAILED".equals(settlement.status())
+                || settlement.httpStatus() != null && (settlement.httpStatus() == 401
+                        || settlement.httpStatus() == 403 || settlement.httpStatus() == 429)
                 || settlement.httpStatus() != null && settlement.httpStatus() >= 500;
     }
 
     private String runtimeErrorCode(Settlement settlement) {
-        return "RATE_LIMITED".equals(settlement.status()) ? "RATE_LIMITED" : settlement.status();
+        if ("RATE_LIMITED".equals(settlement.status()) || Integer.valueOf(429).equals(settlement.httpStatus())) {
+            return "RATE_LIMITED";
+        }
+        if (settlement.httpStatus() != null && (settlement.httpStatus() == 401 || settlement.httpStatus() == 403)) {
+            return "AUTH_FAILED";
+        }
+        if (settlement.httpStatus() != null && settlement.httpStatus() >= 500) {
+            return "UPSTREAM_5XX";
+        }
+        if ("INCOMPLETE".equals(settlement.status())) {
+            return "UPSTREAM_INCOMPLETE";
+        }
+        return "UPSTREAM_CONNECTION_ERROR";
     }
 
     public List<Attempt> list(int limit, int offset) {
@@ -233,6 +253,15 @@ public final class AttemptRepository {
         String day = LocalDate.now(clock).toString();
         return database.read(connection -> {
             List<ProviderUsage> rows = new ArrayList<>();
+            Map<String, Long> activeByProvider = new HashMap<>();
+            try (var active = connection.prepareStatement("SELECT provider_id,COUNT(*) FROM attempts "
+                    + "WHERE status='IN_FLIGHT' GROUP BY provider_id")) {
+                try (var result = active.executeQuery()) {
+                    while (result.next()) {
+                        activeByProvider.put(result.getString(1), result.getLong(2));
+                    }
+                }
+            }
             long attemptsCount = 0;
             long input = 0;
             long output = 0;
@@ -242,28 +271,36 @@ public final class AttemptRepository {
             long uncertain = 0;
             long successes = 0;
             long failures = 0;
-            try (var statement = connection.prepareStatement("SELECT provider_id,COUNT(*),SUM(input_tokens),SUM(output_tokens),"
-                    + "SUM(cached_tokens),SUM(charged_tokens),SUM(status='IN_FLIGHT'),"
-                    + "SUM(usage_state='RESERVED' AND status!='IN_FLIGHT'),SUM(status='SUCCEEDED'),"
-                    + "SUM(status NOT IN ('IN_FLIGHT','SUCCEEDED')) FROM attempts WHERE day=? GROUP BY provider_id")) {
+            var providersWithTodayRows = new HashSet<String>();
+            try (var statement = connection.prepareStatement("SELECT a.provider_id,COUNT(*),SUM(a.input_tokens),SUM(a.output_tokens),"
+                    + "SUM(a.cached_tokens),SUM(a.charged_tokens),"
+                    + "SUM(a.usage_state='RESERVED' AND a.status!='IN_FLIGHT'),SUM(a.status='SUCCEEDED'),"
+                    + "SUM(a.status NOT IN ('IN_FLIGHT','SUCCEEDED')) FROM attempts a WHERE a.day=? GROUP BY a.provider_id")) {
                 statement.setString(1, day);
                 try (var result = statement.executeQuery()) {
                     while (result.next()) {
                         ProviderUsage row = new ProviderUsage(result.getString(1), result.getLong(2), result.getLong(3),
-                                result.getLong(4), result.getLong(5), result.getLong(6), result.getLong(7), result.getLong(8));
+                                result.getLong(4), result.getLong(5), result.getLong(6),
+                                activeByProvider.getOrDefault(result.getString(1), 0L), result.getLong(7));
                         rows.add(row);
+                        providersWithTodayRows.add(row.providerId());
                         attemptsCount += row.requests();
                         input += row.inputTokens();
                         output += row.outputTokens();
                         cached += row.cachedTokens();
                         charged += row.chargedTokens();
-                        inFlight += row.inFlight();
                         uncertain += row.uncertainRequests();
-                        successes += result.getLong(9);
-                        failures += result.getLong(10);
+                        successes += result.getLong(8);
+                        failures += result.getLong(9);
                     }
                 }
             }
+            activeByProvider.forEach((providerId, activeCount) -> {
+                if (!providersWithTodayRows.contains(providerId)) {
+                    rows.add(new ProviderUsage(providerId, 0, 0, 0, 0, 0, activeCount, 0));
+                }
+            });
+            inFlight = activeByProvider.values().stream().mapToLong(Long::longValue).sum();
             long logicalRequests;
             try (var statement = connection.prepareStatement(
                     "SELECT COUNT(*) FROM gateway_requests WHERE substr(received_at,1,10)=?")) {

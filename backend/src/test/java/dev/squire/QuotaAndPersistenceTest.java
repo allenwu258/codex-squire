@@ -102,6 +102,8 @@ class QuotaAndPersistenceTest {
             var provider = providers.save(null, input(0, 0));
             id = provider.id();
             assertThat(provider.encryptedKey()).doesNotContain("upstream-key");
+            assertThat(provider.encryptedKey()).startsWith("v1:");
+            assertThat(Files.readString(directory.resolve("master.key"))).startsWith("v1:");
             assertThat(secrets.encrypt("same")).isNotEqualTo(secrets.encrypt("same"));
             SchemeRepository schemes = new SchemeRepository(first);
             var scheme = schemes.save(null, new SchemeInput("persistent", Scheme.Strategy.ORDERED,
@@ -160,7 +162,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(6);
+            assertThat(migrationCount).isEqualTo(7);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
@@ -220,6 +222,47 @@ class QuotaAndPersistenceTest {
             String health = database.read(connection -> new dev.squire.provider.ProviderRuntimeRepository()
                     .find(connection, id).health());
             assertThat(health).isEqualTo("READY");
+        } finally {
+            database.close();
+        }
+    }
+
+    @Test
+    void wrongMasterKeyIsRejectedBeforeServingRequests() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
+            new ProviderRepository(database, secrets, CLOCK).save(null, input(0, 0));
+        } finally {
+            database.close();
+        }
+        byte[] replacement = new byte[32];
+        java.util.Arrays.fill(replacement, (byte) 7);
+        Files.writeString(directory.resolve("master.key"),
+                java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(replacement));
+        Database reopened = new Database(directory.toString());
+        try {
+            assertThatThrownBy(() -> new LocalSecrets(directory.toString(), reopened))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("cannot decrypt");
+        } finally {
+            reopened.close();
+        }
+    }
+
+    @Test
+    void activeAttemptsRemainVisibleAfterUtcDayRollsOver() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
+            ProviderRepository providers = new ProviderRepository(database, secrets, CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            AttemptRepository previousDay = new AttemptRepository(database, providers, CLOCK);
+            previousDay.admit(id, "scheme", "previous-day", "model");
+            Clock nextDay = Clock.fixed(Instant.parse("2026-09-11T00:00:01Z"), ZoneOffset.UTC);
+            AttemptRepository currentDay = new AttemptRepository(database, providers, nextDay);
+            assertThat(currentDay.statistics().inFlight()).isEqualTo(1);
+            assertThat(currentDay.statistics().providers()).singleElement()
+                    .extracting(AttemptRepository.ProviderUsage::inFlight).isEqualTo(1L);
         } finally {
             database.close();
         }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pencil, Plus, Search, Server, Trash2 } from 'lucide-react';
+import { Pencil, Plus, Search, Server, Trash2, RotateCcw } from 'lucide-react';
 import { Badge, ConfirmDelete, Empty, IconButton, Modal, number, SaveForm } from '../components';
 import type { ApiClient } from '../api';
 import type { Provider, ProviderInput, ProviderRuntimeState, Statistics } from '../types';
@@ -26,7 +26,8 @@ export function Providers({ api, providers, runtime, statistics, refresh }: Prop
           const charged = usage?.chargedTokens ?? 0;
           return <tr key={provider.id}><td><strong>{provider.name}</strong><small className="mono url">{provider.baseUrl}</small></td>
             <td><div><Badge tone={provider.enabled ? 'green' : ''}>{provider.enabled ? '已启用' : '已停用'}</Badge>
-              <Badge tone={health === 'READY' ? 'green' : health === 'UNKNOWN' ? '' : 'amber'}>{healthLabels[health] ?? health}</Badge></div></td>
+              <Badge tone={health === 'READY' ? 'green' : health === 'UNKNOWN' ? '' : 'amber'}>{healthLabels[health] ?? health}</Badge>
+              {state?.cooldownUntil && <IconButton icon={RotateCcw} label={`清除 ${provider.name} 冷却`} onClick={() => void api.clearCooldown(provider.id).then(refresh)} />}</div></td>
             <td className="numeric">{number(usage?.requests ?? 0)} <span className="muted">/ {provider.dailyRequestLimit ? number(provider.dailyRequestLimit) : '不限'}</span></td>
             <td><div className="numeric">{number(charged)} <span className="muted">/ {provider.dailyTokenLimit ? number(provider.dailyTokenLimit) : '不限'}</span></div>
               {provider.dailyTokenLimit > 0 && <progress aria-label={`${provider.name} Token 占额`} max={provider.dailyTokenLimit} value={charged} />}</td>
@@ -43,7 +44,7 @@ function ProviderEditor({ provider, api, refresh, close }: { provider?: Provider
     dailyRequestLimit: provider?.dailyRequestLimit ?? 0, dailyTokenLimit: provider?.dailyTokenLimit ?? 0,
     maxConcurrency: provider?.maxConcurrency ?? 4, tokenReservation: provider?.tokenReservation ?? 8192 });
   const update = <K extends keyof ProviderInput>(key: K, value: ProviderInput[K]) => setInput(current => ({ ...current, [key]: value }));
-  return <Modal title={provider ? '编辑来源' : '添加来源'} close={close}><SaveForm close={close} submit={async () => { await api.saveProvider(input, provider?.id); await refresh(); }}>
+  return <Modal title={provider ? '编辑来源' : '添加来源'} close={close}><SaveForm close={close} submit={async () => { await api.saveProvider(input, provider?.id, provider?.version); await refresh(); }}>
     <label>来源名称<input required maxLength={80} autoFocus value={input.name} onChange={event => update('name', event.target.value)} placeholder="例如：主力 API" /></label>
     <label>Base URL<input required type="url" maxLength={2048} value={input.baseUrl} onChange={event => update('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" /></label>
     <label>API Key{provider && <span className="muted">（留空保留原值）</span>}<input required={!provider} type="password" autoComplete="new-password" maxLength={8192} value={input.apiKey} onChange={event => update('apiKey', event.target.value)} /></label>

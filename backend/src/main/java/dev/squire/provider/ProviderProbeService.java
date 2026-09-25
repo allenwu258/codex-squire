@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 import org.springframework.stereotype.Service;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -22,6 +23,7 @@ public final class ProviderProbeService {
     private final ObjectMapper mapper;
     private final WebClient client = WebClient.builder()
             .codecs(codecs -> codecs.defaultCodecs().maxInMemorySize(1024 * 1024)).build();
+    private final Semaphore probeSlots = new Semaphore(2);
 
     public ProviderProbeService(ProviderRepository providers, LocalSecrets secrets, CapabilityRepository capabilities,
                                 ObjectMapper mapper) {
@@ -35,7 +37,11 @@ public final class ProviderProbeService {
         if (model == null || model.isBlank() || model.length() > 200) {
             return Mono.error(new ApiException(400, "INVALID_MODEL", "A model is required for a provider probe"));
         }
-        return Mono.fromCallable(() -> providers.find(providerId)).flatMap(provider -> {
+        return Mono.defer(() -> {
+            if (!probeSlots.tryAcquire()) {
+                return Mono.error(new ApiException(429, "PROBE_BUSY", "Provider probe capacity is currently full"));
+            }
+            return Mono.fromCallable(() -> providers.find(providerId)).flatMap(provider -> {
             String endpoint = provider.baseUrl() + (URI.create(provider.baseUrl()).getPath().isEmpty()
                     ? "/v1/responses" : "/responses");
             return request(provider, endpoint, model, false)
@@ -48,6 +54,7 @@ public final class ProviderProbeService {
                                 failed.lastProbeAt(), failed.error()));
                         return Mono.just(failed);
                     });
+            }).doFinally(signal -> probeSlots.release());
         });
     }
 

@@ -51,9 +51,25 @@ public final class ProviderRuntimeRepository {
         int failures = Math.min(previousFailures + 1, 30);
         long backoff = retryAfterSeconds == null
                 ? Math.min(300, 5L * (1L << Math.min(failures - 1, 5))) : Math.min(3600, Math.max(1, retryAfterSeconds));
-        String health = "RATE_LIMITED".equals(errorCode) ? "RATE_LIMITED" : "UNHEALTHY";
+        String health = "RATE_LIMITED".equals(errorCode) ? "RATE_LIMITED"
+                : "AUTH_FAILED".equals(errorCode) ? "AUTH_FAILED" : "UNHEALTHY";
+        String cooldown = "AUTH_FAILED".equals(errorCode) ? null : now.plusSeconds(backoff).toString();
         upsert(connection, providerId, health, failures, null, now.toString(), errorCode, message,
-                now.plusSeconds(backoff).toString(), 0, status);
+                cooldown, 0, status);
+    }
+
+    public void clearCooldown(Connection connection, String providerId) throws SQLException {
+        try (var statement = connection.prepareStatement("UPDATE provider_runtime SET health='READY',"
+                + "consecutive_failures=0,cooldown_until=NULL,last_error_code=NULL,last_error_message=NULL "
+                + "WHERE provider_id=?")) {
+            statement.setString(1, providerId);
+            statement.executeUpdate();
+        }
+    }
+
+    public void enterCooldown(Connection connection, String providerId, Instant now, String reason) throws SQLException {
+        upsert(connection, providerId, "QUOTA_EXHAUSTED", 0, null, now.toString(),
+                "QUOTA_COOLDOWN", reason, now.plusSeconds(60).toString(), 0, null);
     }
 
     private void upsert(Connection connection, String providerId, String health, int failures, String successAt,
