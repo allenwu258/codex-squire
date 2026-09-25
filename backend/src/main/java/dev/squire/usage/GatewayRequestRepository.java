@@ -37,7 +37,8 @@ public final class GatewayRequestRepository {
             try (var statement = connection.prepareStatement("UPDATE gateway_requests SET completed_at=?,final_outcome=?,"
                     + "final_provider_id=COALESCE(?,(SELECT provider_id FROM attempts WHERE request_id=? "
                     + "ORDER BY attempt_index DESC LIMIT 1)),attempt_count=(SELECT COUNT(*) FROM attempts WHERE request_id=?),"
-                    + "total_latency_ms=COALESCE((julianday(?) - julianday(received_at))*86400000,0) WHERE id=?")) {
+                    + "total_latency_ms=COALESCE((julianday(?) - julianday(received_at))*86400000,0) "
+                    + "WHERE id=? AND completed_at IS NULL")) {
                 statement.setString(1, completed.toString());
                 statement.setString(2, outcome);
                 statement.setString(3, providerId);

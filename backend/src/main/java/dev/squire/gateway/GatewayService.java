@@ -30,6 +30,8 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
+import reactor.core.publisher.SignalType;
+import reactor.util.retry.Retry;
 import reactor.netty.http.client.HttpClient;
 
 @Service
@@ -78,7 +80,18 @@ public final class GatewayService {
                                 .onErrorResume(error -> finishRequest(requestId, errorCode(error))
                                         .then(Mono.error(error)))))
                 .then()
-                .onErrorMap(UpstreamTransportException.class, error -> error.apiException());
+                .onErrorMap(UpstreamTransportException.class, error -> error.apiException())
+                .doFinally(signal -> {
+                    if (signal == SignalType.CANCEL) {
+                        databaseScheduler.schedule(() -> {
+                            try {
+                                requests.finish(requestId, "CLIENT_CANCELLED", null);
+                            } catch (RuntimeException error) {
+                                LOGGER.error("Unable to finish cancelled gateway request {}", requestId, error);
+                            }
+                        });
+                    }
+                });
     }
 
     private Mono<Void> finishRequest(String requestId, String outcome) {
@@ -190,6 +203,11 @@ public final class GatewayService {
             buffer.read(bytes);
             buffer.readPosition(position);
             context.inspector.accept(bytes);
+            if (context.inspector.observedTerminalStatus() != null) {
+                OutcomeResolver.ResponseOutcome observed = outcomes.response(status, context.inspector.observedTerminalStatus());
+                context.status = observed.status();
+                context.upstreamOutcome = observed.upstreamOutcome();
+            }
         }).doOnComplete(() -> {
             context.inspector.end();
             OutcomeResolver.ResponseOutcome outcome = outcomes.response(status, context.inspector.resultStatus());
@@ -206,7 +224,8 @@ public final class GatewayService {
     }
 
     private Mono<Void> settle(AttemptContext context) {
-        return safeSettle(context);
+        return settleWithRetry(context).onErrorMap(error -> new ApiException(500, "DATABASE_SETTLEMENT_ERROR",
+                "Provider attempt could not be settled in local storage"));
     }
 
     private Mono<Void> settleOnError(AttemptContext context, Throwable error) {
@@ -219,7 +238,11 @@ public final class GatewayService {
         context.status = outcome.status();
         context.upstreamOutcome = outcome.upstreamOutcome();
         context.deliveryOutcome = outcome.deliveryOutcome();
-        return safeSettle(context);
+        return settleWithRetry(context).onErrorResume(settlementError -> {
+            LOGGER.error("Unable to settle failed attempt {}", context.admission.id(), settlementError);
+            error.addSuppressed(settlementError);
+            return Mono.empty();
+        });
     }
 
     private Mono<Void> settleOnCancel(AttemptContext context) {
@@ -229,7 +252,10 @@ public final class GatewayService {
         context.status = outcome.status();
         context.upstreamOutcome = outcome.upstreamOutcome();
         context.deliveryOutcome = outcome.deliveryOutcome();
-        return safeSettle(context);
+        return settleWithRetry(context).onErrorResume(error -> {
+            LOGGER.error("Unable to settle cancelled attempt {}", context.admission.id(), error);
+            return Mono.empty();
+        });
     }
 
     private Mono<Void> settleWith(AttemptContext context, String status) {
@@ -254,11 +280,9 @@ public final class GatewayService {
         }
     }
 
-    private Mono<Void> safeSettle(AttemptContext context) {
-        return settleWith(context, context.status).onErrorResume(error -> {
-            LOGGER.error("Unable to settle attempt {}: {}", context.admission.id(), error.getMessage());
-            return Mono.empty();
-        });
+    private Mono<Void> settleWithRetry(AttemptContext context) {
+        return settleWith(context, context.status).retryWhen(Retry.backoff(3, Duration.ofMillis(50))
+                .filter(error -> error instanceof ApiException api && "DATABASE_BUSY".equals(api.code())));
     }
 
     private String validate(byte[] body) {

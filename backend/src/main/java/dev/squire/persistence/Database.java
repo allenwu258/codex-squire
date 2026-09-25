@@ -46,6 +46,10 @@ public final class Database {
             try (Statement statement = connection.createStatement()) {
                 statement.executeUpdate("UPDATE attempts SET status='INTERRUPTED', usage_state='RESERVED', "
                         + "ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE status='IN_FLIGHT'");
+                statement.executeUpdate("UPDATE gateway_requests SET final_outcome='INTERRUPTED',"
+                        + "completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),"
+                        + "attempt_count=(SELECT COUNT(*) FROM attempts WHERE request_id=gateway_requests.id) "
+                        + "WHERE completed_at IS NULL");
             }
         } catch (IOException | SQLException | RuntimeException exception) {
             lock.release();
@@ -91,6 +95,20 @@ public final class Database {
                 result.next();
                 return result.getBoolean(1);
             }
+        });
+    }
+
+    public java.util.List<String> encryptedCredentials() {
+        return read(connection -> {
+            java.util.List<String> credentials = new java.util.ArrayList<>();
+            try (var statement = connection.prepareStatement(
+                    "SELECT encrypted_key FROM providers WHERE encrypted_key IS NOT NULL AND encrypted_key <> ''");
+                    var result = statement.executeQuery()) {
+                while (result.next()) {
+                    credentials.add(result.getString(1));
+                }
+            }
+            return credentials;
         });
     }
 

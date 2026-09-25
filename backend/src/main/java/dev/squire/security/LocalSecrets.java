@@ -19,6 +19,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.HexFormat;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -29,6 +30,7 @@ import org.springframework.stereotype.Component;
 public final class LocalSecrets {
     private static final SecureRandom RANDOM = new SecureRandom();
     private final byte[] masterKey;
+    private final String keyId;
     private final String adminToken;
     private final String gatewayToken;
 
@@ -41,12 +43,26 @@ public final class LocalSecrets {
             throw new IllegalStateException("Master key is missing while encrypted provider credentials exist");
         }
         try {
-            masterKey = Base64.getUrlDecoder().decode(readOrCreate(masterKeyFile));
+            String encoded = readOrCreate(masterKeyFile);
+            String[] parts = encoded.split(":", 3);
+            masterKey = Base64.getUrlDecoder().decode(parts.length == 3 && "v1".equals(parts[0])
+                    ? parts[2] : encoded);
+            keyId = fingerprint(masterKey);
+            if (parts.length == 3 && !keyId.equals(parts[1])) {
+                throw new IllegalStateException("Master key fingerprint does not match its contents");
+            }
         } catch (IllegalArgumentException exception) {
             throw new IllegalStateException("Master key has an invalid format", exception);
         }
         if (masterKey.length != 32) {
             throw new IllegalStateException("Master key must contain 32 bytes");
+        }
+        for (String existing : database.encryptedCredentials()) {
+            try {
+                decrypt(existing);
+            } catch (ApiException exception) {
+                throw new IllegalStateException("Master key cannot decrypt existing provider credentials; restore the original key", exception);
+            }
         }
         adminToken = readOrCreate(directory.resolve("admin.token"));
         gatewayToken = readOrCreate(directory.resolve("gateway.token"));
@@ -69,7 +85,8 @@ public final class LocalSecrets {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(masterKey, "AES"), new GCMParameterSpec(128, nonce));
             byte[] ciphertext = cipher.doFinal(plainText.getBytes(StandardCharsets.UTF_8));
-            return Base64.getEncoder().encodeToString(nonce) + ":" + Base64.getEncoder().encodeToString(ciphertext);
+            return "v1:" + keyId + ":" + Base64.getEncoder().encodeToString(nonce) + ":"
+                    + Base64.getEncoder().encodeToString(ciphertext);
         } catch (GeneralSecurityException exception) {
             throw new IllegalStateException("Credential encryption failed", exception);
         }
@@ -77,14 +94,18 @@ public final class LocalSecrets {
 
     public String decrypt(String encrypted) {
         try {
-            String[] parts = encrypted.split(":", 2);
-            if (parts.length != 2) {
+            String[] parts = encrypted.split(":", 4);
+            boolean versioned = parts.length == 4 && "v1".equals(parts[0]);
+            if (!versioned && parts.length != 2) {
                 throw new IllegalArgumentException("Invalid encrypted credential format");
+            }
+            if (versioned && !keyId.equals(parts[1])) {
+                throw new IllegalArgumentException("Encrypted credential belongs to a different master key");
             }
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(masterKey, "AES"),
-                    new GCMParameterSpec(128, Base64.getDecoder().decode(parts[0])));
-            return new String(cipher.doFinal(Base64.getDecoder().decode(parts[1])), StandardCharsets.UTF_8);
+                    new GCMParameterSpec(128, Base64.getDecoder().decode(parts[versioned ? 2 : 0])));
+            return new String(cipher.doFinal(Base64.getDecoder().decode(parts[versioned ? 3 : 1])), StandardCharsets.UTF_8);
         } catch (GeneralSecurityException | IllegalArgumentException exception) {
             throw new ApiException(500, "CREDENTIAL_DECRYPTION_FAILED",
                     "Stored provider credential could not be decrypted");
@@ -95,11 +116,21 @@ public final class LocalSecrets {
         if (!Files.exists(file)) {
             byte[] value = new byte[32];
             RANDOM.nextBytes(value);
-            Files.writeString(file, Base64.getUrlEncoder().withoutPadding().encodeToString(value),
+            String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(value);
+            Files.writeString(file, file.getFileName().toString().equals("master.key")
+                    ? "v1:" + fingerprint(value) + ":" + encoded : encoded,
                     StandardOpenOption.CREATE_NEW);
         }
         restrict(file);
         return Files.readString(file).trim();
+    }
+
+    private static String fingerprint(byte[] key) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(key), 0, 8);
+        } catch (GeneralSecurityException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private static void restrict(Path path) throws IOException {

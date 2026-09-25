@@ -53,7 +53,7 @@ class GatewayIntegrationTest {
                 }
                 return response.header("Content-Type", "application/json").sendString(Mono.just(JSON)).then();
             }
-            if (mode.equals("429") || mode.equals("400") || mode.equals("503")) {
+            if (mode.equals("429") || mode.equals("400") || mode.equals("401") || mode.equals("503")) {
                 return response.status(Integer.parseInt(mode)).header("Content-Type", "application/json")
                         .sendString(Mono.just("{\"error\":{\"message\":\"upstream rejection\"}}")).then();
             }
@@ -71,6 +71,11 @@ class GatewayIntegrationTest {
                 return response.header("Content-Type", "text/event-stream").sendGroups(Flux.concat(
                         Mono.just("data: {\"type\":\"response.created\"}\n\n"),
                         Mono.delay(Duration.ofSeconds(30)).map(ignored -> TERMINAL))
+                        .map(value -> Mono.just(io.netty.buffer.Unpooled.copiedBuffer(value, java.nio.charset.StandardCharsets.UTF_8)))).then();
+            }
+            if (mode.equals("completed-slow")) {
+                return response.header("Content-Type", "text/event-stream").sendGroups(Flux.concat(
+                        Mono.just(TERMINAL), Mono.delay(Duration.ofSeconds(30)).map(ignored -> "data: {\"type\":\"response.created\"}\n\n"))
                         .map(value -> Mono.just(io.netty.buffer.Unpooled.copiedBuffer(value, java.nio.charset.StandardCharsets.UTF_8)))).then();
             }
             if (mode.equals("truncated")) {
@@ -170,6 +175,17 @@ class GatewayIntegrationTest {
                     .jsonPath("$.error.message").isEqualTo("upstream rejection");
         }
         assertThat(CALLS).doesNotContainKey("b");
+    }
+
+    @Test
+    void recordsAuthenticationFailureWithoutCooldown() {
+        MODES.put("a", "401");
+        scheme("ORDERED", List.of(provider("a", 0, 0, 4)));
+        response(false).expectStatus().isEqualTo(401);
+        admin.get().uri("/api/provider-runtime").exchange().expectStatus().isOk().expectBody()
+                .jsonPath("$[0].health").isEqualTo("AUTH_FAILED")
+                .jsonPath("$[0].lastErrorCode").isEqualTo("AUTH_FAILED")
+                .jsonPath("$[0].cooldownUntil").value(value -> assertThat(value).isNull());
     }
 
     @Test
@@ -315,6 +331,21 @@ class GatewayIntegrationTest {
         settled().expectBody().jsonPath("$.uncertainRequests").isEqualTo(1);
         MODES.put("a", "json");
         response(false).expectStatus().isOk();
+    }
+
+    @Test
+    void completedUpstreamRemainsCompletedWhenClientCancelsDelivery() throws InterruptedException {
+        MODES.put("a", "completed-slow");
+        scheme("ORDERED", List.of(provider("a", 0, 0, 1)));
+        var running = gateway.post().uri("/v1/responses").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"model\":\"test-model\",\"input\":[],\"stream\":true}").exchange()
+                .expectStatus().isOk().returnResult(String.class);
+        assertThat(running.getResponseBody().take(1).blockLast(Duration.ofSeconds(5))).isNotNull();
+        settled().expectBody().jsonPath("$.successes").isEqualTo(0);
+        admin.get().uri("/api/attempts").exchange().expectBody()
+                .jsonPath("$[0].upstreamOutcome").isEqualTo("COMPLETED")
+                .jsonPath("$[0].deliveryOutcome").isEqualTo("CLIENT_CANCELLED")
+                .jsonPath("$[0].usageState").isEqualTo("REPORTED");
     }
 
     @Test

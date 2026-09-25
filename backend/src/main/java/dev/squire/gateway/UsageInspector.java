@@ -68,6 +68,10 @@ public final class UsageInspector {
         return "INCOMPLETE";
     }
 
+    public String observedTerminalStatus() {
+        return terminalStatus;
+    }
+
     private void consumeLine() {
         String line = buffer.toString(StandardCharsets.UTF_8);
         if (overflow) {
