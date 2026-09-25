@@ -1,34 +1,33 @@
 # 已知问题与开发顺序
 
-更新日期：2026-09-11。以下描述当前第一版实现；文档和启动配置更新不代表这些业务问题已修复。
+更新日期：2026-09-25。以下只列出仍未完成或需要继续加强的内容。
 
 ## 优先解决的正确性问题
 
 | 编号 | 当前行为与影响 | 计划及验收方向 |
 | --- | --- | --- |
-| K01 | 加权算法在全部成员上分配票号，再跳过不可用来源。A/B/C 权重 100/1/1、A 不可用时，后续 B/C 可能分配为 101:1 | 按有效候选决策，同时保留原子准入；验证禁用、额度不足、恢复和方案切换后的公平性 |
-| K02 | 收到 completed 后再取消，usage 可以保留为 REPORTED，但 attempt 被记为 CANCELLED；错误清理也会覆盖已确定分类 | 分离上游结果和交付结果；覆盖终态后取消、写入中取消、未完成流等时序 |
-| K03 | 3xx 返回 502/UPSTREAM_REDIRECT，但日志状态会被异常清理覆盖为 TRANSPORT_ERROR；部分数据库/解密异常可能被映射为 UPSTREAM_FAILURE | 保留已确定业务分类，区分存储、配置、协议与网络错误 |
-| K04 | 已建立版本化迁移器、`schema_migrations` 和 checksum，并能接管现有 V1；尚未有 V2 以上的真实增量迁移历史 | 新增持久化字段前继续补版本迁移、升级失败恢复和备份恢复测试 |
-| K05 | 已有加密凭据但 `master.key` 缺失时现在会拒绝启动；密文格式版本、密钥轮换和系统凭据库尚未实现 | 增加密文版本/keyId、轮换流程，并在桌面阶段接入系统凭据库 |
+| K01 | 已覆盖上游终态先到、客户端随后取消的基本场景；最终写库期间取消、真实连接断开与进程退出等竞态仍依赖 Reactor 生命周期 | 补充真实客户端断开、结算失败和进程退出测试，确保交付结果和上游结果都可追溯 |
+| K02 | 额度规则已有分钟/小时/日/周/月和基本动作，但 `DEGRADE` 还没有模型级降级策略，输入/输出在途预留采用保守计数 | 定义降级模型映射、规则解释和额度窗口的完整 UI |
+| K03 | Provider 运行态已有失败退避、Retry-After 和手动清除冷却；尚未按模型维护能力，也没有后台自动探测调度 | 增加模型维度 runtime、探测历史和可控的后台探测策略 |
+| K04 | 配置版本冲突已保护 Provider/Scheme 更新；删除、激活和额度规则更新仍没有统一的版本条件 | 扩展 `If-Match` 到全部可变管理资源并增加审计记录 |
+| K05 | 新密文带版本/keyId，但未实现密钥轮换、系统凭据库和跨版本恢复工具 | 桌面阶段接入 Windows Credential Manager/macOS Keychain，并提供轮换和备份验证 |
 
-证据入口：[RoutingService](../backend/src/main/java/dev/squire/gateway/RoutingService.java)、[GatewayService](../backend/src/main/java/dev/squire/gateway/GatewayService.java)、[Database](../backend/src/main/java/dev/squire/persistence/Database.java)、[LocalSecrets](../backend/src/main/java/dev/squire/security/LocalSecrets.java)。已有加权测试仅覆盖所有来源可用的 2:1 场景；已有取消集成测试没有覆盖 completed 后再取消，不能用测试通过表示 K01/K02 已消失。
+证据入口：[RoutingService](../backend/src/main/java/dev/squire/gateway/RoutingService.java)、[GatewayService](../backend/src/main/java/dev/squire/gateway/GatewayService.java)、[Database](../backend/src/main/java/dev/squire/persistence/Database.java)、[LocalSecrets](../backend/src/main/java/dev/squire/security/LocalSecrets.java)。已有路由测试覆盖不可用成员过滤和准入失败后的公平性；取消测试覆盖终态后取消，但不代表所有生命周期竞态都已消失。
 
 ## 后续能力与边界
 
-- 额度目前只有 UTC 当日请求/token 上限，尚无多窗口规则；预留预算不能保证供应商硬费用上限。
-- 统计中的 inFlight 只覆盖今日启动的尝试，实际并发准入覆盖所有日期；跨午夜时两个值可能不同。
-- 触发换源的 429 响应体被释放，未解析其中可能存在的 usage；没有基于 Retry-After 的冷却，也没有整个网关请求共享的 deadline。
-- 缺少完整逻辑请求/attempt 链、首包耗时、结构化跳过原因、长期归档和供应商账单对账。
-- 配置未使用乐观锁；前端轮询没有完整的过期响应丢弃机制。多窗口编辑和慢响应可能造成覆盖。
-- 前端管理调用使用 ApiClient，但连通测试仍直接 fetch；Tauri 阶段必须统一 transport、进程归属、Origin 和凭据获取。
+- 额度规则覆盖固定窗口和并发准入，但尚未支持成本指标、滚动自定义窗口和完整的供应商账单对账；预留预算不能保证供应商硬费用上限。
+- 统计已区分逻辑 requests、attempts 与跨日期 active attempts；跳过候选目前只在最终错误和 attempt 诊断中体现，没有独立 admission 事件表。
+- 触发换源的 429 响应体被释放，未解析其中可能存在的 usage；当前总 deadline 是单次 attempt 配置，多个候选没有共享 retry budget。
+- 前端轮询具备 AbortController、序号和编辑草稿隔离；统一 transport、离线缓存和多窗口实时协作仍未实现。
+- 前端管理调用和连通测试都使用 ApiClient，但 ApiClient 内部仍绑定 Web `fetch`；Tauri 阶段必须抽象 transport、进程归属、Origin 和凭据获取。
 - 不支持远程状态续接、compact、WebSocket、OAuth、会话管理和提示词管理；现有元数据不能视作这些能力已经实现。
 
 ## 开发顺序
 
-1. 修复 K01/K02/K03，补对应路由和生命周期回归测试；在新增字段前继续扩展 K04 的版本迁移与升级测试。
-2. 增加多窗口限额、请求诊断、单来源探测、可解释的冷却和一致的统计口径。
-3. 改善配置并发编辑与前端请求管理，建立统一后端连接和进程发现机制。
-4. 在明确来源归属后加入会话/提示词领域，再封装 Tauri；桌面生命周期和密钥库单独验收。
+1. 补齐取消竞态、迁移升级和密钥轮换测试，明确 `DEGRADE` 与 admission 事件语义。
+2. 增加模型能力注册、探测历史、共享 retry budget 和成本/账单维度。
+3. 将版本条件扩展到全部可变管理资源，统一 Web/Tauri transport 和错误本地化。
+4. 在明确来源归属后加入会话/提示词领域，再封装 Tauri；桌面生命周期和系统密钥库单独验收。
 
 本文件是当前问题和优先级入口。修复后更新行为说明、回归测试入口和完成提交，不将尚未实现的设计写成现有能力。

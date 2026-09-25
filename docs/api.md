@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | GET | `/api/providers` | 列出来源，不返回 API Key 或密文 |
 | POST | `/api/providers` | 创建，返回 201 与实体 |
-| PUT | `/api/providers/{id}` | 完整更新配置，返回实体 |
+| PUT | `/api/providers/{id}` | 完整更新配置；必须携带当前版本的 `If-Match: "<version>"` |
 | DELETE | `/api/providers/{id}` | 删除，返回 204；方案引用会返回 409 |
 
 创建/更新示例：
@@ -44,7 +44,7 @@
 
 `name` 非空、最长 80；`baseUrl` 非空、最长 2048；`apiKey` 最长 8192，禁止换行。name 经 trim 后唯一。日限额允许 0，表示不限。PUT 是完整配置更新，不是 PATCH；除 apiKey 的保留语义外，应发送全部配置字段。不要依赖省略基本类型字段时的反序列化零值，例如省略 enabled 可能导致来源禁用。
 
-响应实体字段为 `id`、`name`、`baseUrl`、`enabled`、`dailyRequestLimit`、`dailyTokenLimit`、`maxConcurrency`、`tokenReservation`、`createdAt`。列表返回实体数组；不返回 apiKey/encryptedKey。时间使用 UTC ISO-8601 字符串。
+响应实体字段还包括 `version`。更新成功返回对应的 `ETag`；缺失 `If-Match` 返回 428，版本过期返回 412。列表返回实体数组；不返回 apiKey/encryptedKey。时间使用 UTC ISO-8601 字符串。
 
 Base URL 不包含最终 `/responses`；已有路径则在其后追加 `/responses`，根地址则追加 `/v1/responses`。只允许 HTTP(S)，远程来源必须 HTTPS，明文 HTTP 仅允许 localhost/127.0.0.1/IPv6 loopback。禁止 URL 用户信息、查询参数和 fragment。
 
@@ -54,7 +54,7 @@ Base URL 不包含最终 `/responses`；已有路径则在其后追加 `/respons
 | --- | --- | --- |
 | GET | `/api/schemes` | 返回方案与有序成员列表 |
 | POST | `/api/schemes` | 创建非生效方案，返回 201 |
-| PUT | `/api/schemes/{id}` | 原子更新名称、策略与完整成员列表 |
+| PUT | `/api/schemes/{id}` | 原子更新名称、策略与完整成员列表；必须携带当前版本的 `If-Match` |
 | POST | `/api/schemes/{id}/activate` | 原子切换生效方案 |
 | DELETE | `/api/schemes/{id}` | 删除非生效方案，返回 204 |
 
@@ -71,7 +71,7 @@ Base URL 不包含最终 `/responses`；已有路径则在其后追加 `/respons
 
 策略为 `ORDERED` 或 `BALANCED`。数组顺序就是优先级；权重 1..100，单方案最多 100 个成员，同一 Provider 不能重复出现。创建不隐式生效；空方案可保存草稿但不可激活。
 
-名称非空、最长 80，trim 后唯一。响应字段为 `id`、`name`、`strategy`、`active`、`members`；每个成员包含 `providerId`、`weight`。保存和激活成功返回实体，普通更新为 200。生效方案不能更新为空或直接删除，分别返回 409；成员引用不存在的 Provider 返回冲突，整次更新回滚。
+名称非空、最长 80，trim 后唯一。响应字段为 `id`、`name`、`strategy`、`active`、`version`、`members`；每个成员包含 `providerId`、`weight`。保存和激活成功返回实体，普通更新为 200 并返回 `ETag`。生效方案不能更新为空或直接删除，分别返回 409；成员引用不存在的 Provider 返回冲突，整次更新回滚。
 
 ## 用量和连接
 
@@ -81,15 +81,15 @@ Base URL 不包含最终 `/responses`；已有路径则在其后追加 `/respons
 | GET | `/api/attempts?limit=30&offset=0` | 倒序尝试记录；limit 1..200，默认 50；offset 0..1000000，默认 0 |
 | GET | `/api/connection` | 本地网关 URL、网关令牌、数据目录、限额时区 |
 
-`statistics` 中 inputTokens / outputTokens / cachedTokens 只包含上游已报告值。`chargedTokens` 包含已报告值及保留的预留占额，包括进行中尝试。`uncertainRequests` 只统计 `status != IN_FLIGHT` 且 `usageState = RESERVED` 的记录，不包括无 usage 但按拒绝处理的 NOT_APPLICABLE。`inFlight` 是今日启动并仍在处理的尝试数，不等于跨所有日期计算的实际并发占用。
+`statistics` 中 inputTokens / outputTokens / cachedTokens 只包含上游已报告值。`chargedTokens` 包含已报告值及保留的预留占额，包括进行中尝试。`uncertainRequests` 只统计 `status != IN_FLIGHT` 且 `usageState = RESERVED` 的记录，不包括无 usage 但按拒绝处理的 NOT_APPLICABLE。`inFlight` 按所有日期仍为 `IN_FLIGHT` 的尝试计算，与准入口径一致。
 
-统计顶层字段：`day`（UTC yyyy-MM-dd）、`requests`、`successes`、`failures`、`inFlight`、`inputTokens`、`outputTokens`、`cachedTokens`、`chargedTokens`、`uncertainRequests`、`providers`。requests 计准入 attempt，不计未准入的逻辑请求；successes 计 SUCCEEDED，failures 计除 IN_FLIGHT/SUCCEEDED 外的状态，包括取消和中断。providers 为当日有记录的来源聚合数组，每项包含 providerId、requests、三个已报告 token 字段、chargedTokens、inFlight、uncertainRequests，没有记录的来源不会自动补零行。
+统计顶层字段：`day`（UTC yyyy-MM-dd）、`requests`、`attempts`、`successes`、`failures`、`inFlight`、`inputTokens`、`outputTokens`、`cachedTokens`、`chargedTokens`、`uncertainRequests`、`providers`。顶层 `requests` 计逻辑请求；`attempts` 计准入的 Provider 尝试，均不计未准入的请求。`successes` 计 SUCCEEDED，`failures` 计除 IN_FLIGHT/SUCCEEDED 外的状态，包括取消和中断。providers 为当日有记录或仍有跨日活动尝试的来源聚合数组，每项的 `requests` 仍是 attempt 数，`inFlight` 跨所有日期计算。
 
 `attempts` 中 requestId 用于关联故障转移前后的多次尝试，id 标识单次尝试。`usageState` 为 `REPORTED`、`RESERVED` 或 `NOT_APPLICABLE`。HTTP 状态与最终状态独立：流式响应可能 HTTP 200 但最终 `INCOMPLETE` 或 `CANCELLED`。
 
 attempts 返回数组，没有总条数包装。按 startedAt、id 倒序排列；字段为 `id`、`requestId`、`providerId`、`providerName`、`model`、`startedAt`、`endedAt`、`status`、`httpStatus`、`inputTokens`、`outputTokens`、`cachedTokens`、`chargedTokens`、`usageState`、`latencyMs`。endedAt 在途时为 null，httpStatus 尚未收到上游状态时为 null；缺失已报告用量时 token 数字为 0，必须结合 usageState 解读。latencyMs 在结算时写入，单位毫秒。
 
-状态包括 IN_FLIGHT、SUCCEEDED、FAILED、INCOMPLETE、RATE_LIMITED、UPSTREAM_ERROR、TRANSPORT_ERROR、CANCELLED、INTERRUPTED。当前重定向虽设置过 REDIRECT_REJECTED，异常清理会将其覆盖为 TRANSPORT_ERROR；完成后取消也可能是 CANCELLED + REPORTED，详见 [已知问题](known-issues.md)。
+状态包括 IN_FLIGHT、SUCCEEDED、FAILED、INCOMPLETE、RATE_LIMITED、UPSTREAM_ERROR、TRANSPORT_ERROR、CANCELLED、INTERRUPTED。`upstreamOutcome` 与 `deliveryOutcome` 独立保存，例如上游已完成但客户端取消可同时表示 `COMPLETED` 与 `CLIENT_CANCELLED`。3xx 使用 `UPSTREAM_REDIRECT` 分类并保留在 attempt 记录中。
 
 connection 返回 `baseUrl`（含 /v1）、`gatewayToken`、`dataDirectory`、`quotaTimeZone`（UTC）。它包含网关凭据，必须使用管理令牌读取，不应写入公开日志。`GET /api/health` 返回 `{"status":"UP","version":"0.1.0"}`，不证明上游来源可用。
 
@@ -128,11 +128,11 @@ model 必须非空且最长 200；input 目前只检查字段存在，内容兼�
 | 401 / 403 | UNAUTHORIZED / ORIGIN_DENIED | 令牌错误或浏览器来源不允许 |
 | 404 | PROVIDER_NOT_FOUND / SCHEME_NOT_FOUND | 管理资源不存在 |
 | 409 | CONFLICT | 名称唯一性或引用约束冲突 |
+| 412 / 428 | CONFIG_VERSION_CONFLICT / CONFIG_VERSION_REQUIRED | 配置版本过期或缺少 `If-Match` |
 | 409 | EMPTY_ACTIVE_SCHEME / EMPTY_SCHEME / ACTIVE_SCHEME | 生效方案不能为空、空方案不能激活、生效方案不能删除 |
 | 413 | REQUEST_TOO_LARGE | 请求体超过上限 |
 | 415 等 | HTTP_415 等 | Spring HTTP 状态异常转换 |
-| 502 | UPSTREAM_REDIRECT / UPSTREAM_FAILURE | 重定向被拒绝或未提交响应前发生异常 |
+| 500 | CREDENTIAL_DECRYPTION_FAILED / STORAGE_ERROR / DATABASE_SETTLEMENT_ERROR | 密钥、存储或结算失败 |
+| 502 | UPSTREAM_REDIRECT / UPSTREAM_TIMEOUT / UPSTREAM_CONNECTION_ERROR | 重定向、超时或连接失败 |
 | 503 | NO_ACTIVE_SCHEME / NO_AVAILABLE_PROVIDER | 没有生效方案或候选全部不可用 |
-| 500 | INTERNAL_ERROR | 未归类内部失败 |
-
-当前 UPSTREAM_FAILURE 可能包含被广泛映射的存储/解密异常，不能仅凭 code 断定是供应商网络故障。上游透传错误正文不保证符合本地 error 结构；SSE 已提交后的失败也不能再转换成普通 JSON 错误响应。
+上游透传错误正文不保证符合本地 error 结构；SSE 已提交后的失败也不能再转换成普通 JSON 错误响应。Provider 探测使用真实响应 `Content-Type` 判断 JSON/SSE，单机最多并发 2 个探测，响应体解析上限 1 MiB。
