@@ -8,6 +8,7 @@ import dev.squire.scheme.SchemeInput;
 import dev.squire.scheme.SchemeRepository;
 import dev.squire.security.LocalSecrets;
 import dev.squire.usage.AttemptRepository;
+import dev.squire.usage.GatewayRequestRepository;
 import dev.squire.usage.QuotaRule;
 import dev.squire.usage.QuotaRuleInput;
 import dev.squire.usage.QuotaRuleRepository;
@@ -162,7 +163,7 @@ class QuotaAndPersistenceTest {
                     return result.getInt(1);
                 }
             });
-            assertThat(migrationCount).isEqualTo(7);
+            assertThat(migrationCount).isEqualTo(8);
             database.transaction(connection -> {
                 try (var statement = connection.createStatement()) {
                     statement.executeUpdate("UPDATE schema_migrations SET checksum='invalid'");
@@ -224,6 +225,57 @@ class QuotaAndPersistenceTest {
             assertThat(health).isEqualTo("READY");
         } finally {
             database.close();
+        }
+    }
+
+    @Test
+    void migrationBackfillsLegacyAttemptsAsLogicalRequestsOnce() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
+            String providerId = providers.save(null, input(0, 0)).id();
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var first = attempts.admit(providerId, "scheme", "legacy-request", "model");
+            attempts.finish(first, "UPSTREAM_ERROR", 400, null, true);
+            var second = attempts.admit(providerId, "scheme", "legacy-request", "model");
+            attempts.finish(second, "SUCCEEDED", 200, new Usage(2, 3, 0), false);
+            new GatewayRequestRepository(database, CLOCK).start("existing-request", "model", true, "scheme");
+            database.transaction(connection -> {
+                try (var statement = connection.createStatement()) {
+                    statement.executeUpdate("DELETE FROM schema_migrations WHERE version=8");
+                    statement.execute("PRAGMA user_version=7");
+                }
+                return null;
+            });
+        } finally {
+            database.close();
+        }
+
+        Database upgraded = new Database(directory.toString());
+        try {
+            assertThat(new GatewayRequestRepository(upgraded, CLOCK).logicalRequests("2026-09-10")).isEqualTo(2);
+            upgraded.read(connection -> {
+                try (var statement = connection.prepareStatement("SELECT final_outcome,attempt_count,final_provider_id "
+                        + "FROM gateway_requests WHERE id='legacy-request'"); var row = statement.executeQuery()) {
+                    assertThat(row.next()).isTrue();
+                    assertThat(row.getString(1)).isEqualTo("SUCCEEDED");
+                    assertThat(row.getInt(2)).isEqualTo(2);
+                    assertThat(row.getString(3)).isNotBlank();
+                }
+                return null;
+            });
+            assertThat(new AttemptRepository(upgraded,
+                    new ProviderRepository(upgraded, new LocalSecrets(directory.toString(), upgraded), CLOCK),
+                    CLOCK).statistics().requests()).isEqualTo(2);
+        } finally {
+            upgraded.close();
+        }
+        Database restarted = new Database(directory.toString());
+        try {
+            assertThat(new GatewayRequestRepository(restarted, CLOCK).logicalRequests("2026-09-10")).isEqualTo(2);
+        } finally {
+            restarted.close();
         }
     }
 
