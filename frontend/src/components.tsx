@@ -56,18 +56,21 @@ export function Modal({ title, children, close }: { title: string; children: Rea
   </dialog>;
 }
 
-export function SaveForm({ children, submit, close, destructive = false }: { children: ReactNode; submit: () => Promise<void>; close: () => void; destructive?: boolean }) {
+export function SaveForm({ children, submit, close, destructive = false, disabled = false }: {
+  children: ReactNode; submit: () => Promise<void>; close: () => void; destructive?: boolean; disabled?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (disabled) return;
     setBusy(true); setError('');
     try { await submit(); close(); } catch (failure) { setError(errorMessage(failure)); } finally { setBusy(false); }
   }
   return <form onSubmit={handleSubmit}>
     <fieldset disabled={busy} className="form-body">{children}{error && <ErrorNotice message={error} />}</fieldset>
     <footer><button type="button" className="button" disabled={busy} onClick={close}>取消</button>
-      <button className={`button primary ${destructive ? 'destructive' : ''}`} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : destructive ? <Trash2 size={16} /> : <Check size={16} />}{destructive ? '确认删除' : '保存'}</button></footer>
+      <button className={`button primary ${destructive ? 'destructive' : ''}`} disabled={busy || disabled}>{busy ? <LoaderCircle className="spin" size={16} /> : destructive ? <Trash2 size={16} /> : <Check size={16} />}{destructive ? '确认删除' : '保存'}</button></footer>
   </form>;
 }
 

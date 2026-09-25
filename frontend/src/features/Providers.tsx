@@ -70,11 +70,21 @@ function QuotaEditor({ provider, api, close }: { provider: Provider; api: ApiCli
   const [rules, setRules] = useState<QuotaRuleInput[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  useEffect(() => { void api.quotaRules(provider.id).then(values => setRules(values.map(({ id: _id, providerId: _providerId, ...rule }) => rule))).catch(failure => setError(errorMessage(failure))).finally(() => setLoading(false)); }, [api, provider.id]);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setError('');
+    void api.quotaRules(provider.id, controller.signal)
+      .then(values => setRules(values.map(({ id: _id, providerId: _providerId, ...rule }) => rule)))
+      .catch(failure => { if (!controller.signal.aborted) setError(errorMessage(failure)); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [api, provider.id, reload]);
   function addRule() { setRules(current => [...current, { metric: 'REQUEST_COUNT', windowType: 'DAY', windowSize: 1, timezone: 'UTC', threshold: 1, action: 'SKIP_PROVIDER', enabled: true, priority: 0 }]); }
   function update(index: number, patch: Partial<QuotaRuleInput>) { setRules(current => current.map((rule, position) => position === index ? { ...rule, ...patch } : rule)); }
-  return <Modal title={`${provider.name} 额度规则`} close={close}><SaveForm close={close} submit={async () => { await api.saveQuotaRules(provider.id, rules); }}>
-    {error && <ErrorNotice message={error} />}{loading ? <p className="muted">正在读取规则</p> : rules.map((rule, index) => <div className="quota-rule" key={`${index}-${rule.metric}`}>
+  return <Modal title={`${provider.name} 额度规则`} close={close}><SaveForm close={close} disabled={loading || !!error} submit={async () => { await api.saveQuotaRules(provider.id, rules); }}>
+    {error && <><ErrorNotice message={error} /><button type="button" className="button" onClick={() => setReload(value => value + 1)}><RotateCcw size={16} />重试读取</button></>}
+    {loading ? <p className="muted">正在读取规则</p> : !error && rules.map((rule, index) => <div className="quota-rule" key={`${index}-${rule.metric}`}>
       <label>指标<select value={rule.metric} onChange={event => update(index, { metric: event.target.value as QuotaRuleInput['metric'] })}>{metrics.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       <label>窗口<select value={rule.windowType} onChange={event => update(index, { windowType: event.target.value as QuotaRuleInput['windowType'] })}>{windows.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
       <label>窗口数量<input type="number" min={1} max={100000} value={rule.windowSize} onChange={event => update(index, { windowSize: Number(event.target.value) })} /></label>
@@ -85,7 +95,7 @@ function QuotaEditor({ provider, api, close }: { provider: Provider; api: ApiCli
       <label className="checkbox"><input type="checkbox" checked={rule.enabled} onChange={event => update(index, { enabled: event.target.checked })} />启用</label>
       <IconButton icon={X} label="删除规则" onClick={() => setRules(current => current.filter((_, position) => position !== index))} />
     </div>)}
-    {!loading && <button type="button" className="button" onClick={addRule}><Plus size={16} />添加规则</button>}
+    {!loading && !error && <button type="button" className="button" onClick={addRule}><Plus size={16} />添加规则</button>}
   </SaveForm></Modal>;
 }
 

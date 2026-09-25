@@ -146,6 +146,40 @@ test('management workflow, real proxy usage, editing, deletion and responsive vi
   expect(errors).toEqual([]);
 });
 
+test('quota editor cannot overwrite rules before a successful load', async ({ page, request }) => {
+  await login(page);
+  const token = fs.readFileSync(path.join(process.env.SQUIRE_E2E_DATA!, 'admin.token'), 'utf8').trim();
+  const headers = { Authorization: `Bearer ${token}` };
+  const created = await request.post('/api/providers', { headers, data: {
+    name: 'Quota safety', baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'mock-api-key',
+    enabled: true, dailyRequestLimit: 0, dailyTokenLimit: 0, maxConcurrency: 2, tokenReservation: 100,
+  } });
+  expect(created.status()).toBe(201);
+  const provider = await created.json();
+  const rule = { metric: 'REQUEST_COUNT', windowType: 'DAY', windowSize: 1, timezone: 'UTC', threshold: 7,
+    action: 'SKIP_PROVIDER', enabled: true, priority: 0 };
+  expect((await request.put(`/api/providers/${provider.id}/quota-rules`, { headers, data: [rule] })).status()).toBe(200);
+
+  await page.route(`**/api/providers/${provider.id}/quota-rules`, async route => {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await route.fulfill({ status: 503, contentType: 'application/json',
+      body: JSON.stringify({ error: { code: 'DATABASE_BUSY', message: 'busy' } }) });
+  });
+  await page.getByRole('button', { name: '来源管理', exact: true }).click();
+  await expect(page.getByText('Quota safety', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '配置 Quota safety 额度' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('button', { name: '保存' })).toBeDisabled();
+  await expect(dialog.getByRole('alert')).toContainText('本地存储正忙');
+  await expect(dialog.getByRole('button', { name: '保存' })).toBeDisabled();
+  expect((await (await request.get(`/api/providers/${provider.id}/quota-rules`, { headers })).json())).toHaveLength(1);
+
+  await page.unroute(`**/api/providers/${provider.id}/quota-rules`);
+  await dialog.getByRole('button', { name: '重试读取' }).click();
+  await expect(dialog.getByRole('button', { name: '保存' })).toBeEnabled();
+  await expect(dialog.getByRole('spinbutton', { name: '阈值', exact: true })).toHaveValue('7');
+});
+
 test('installed Codex CLI completes a turn through the gateway and mock SSE upstream', async ({ request }) => {
   const adminToken = fs.readFileSync(path.join(process.env.SQUIRE_E2E_DATA!, 'admin.token'), 'utf8').trim();
   const headers = { Authorization: `Bearer ${adminToken}` };
