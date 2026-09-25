@@ -375,11 +375,8 @@ class QuotaAndPersistenceTest {
                     new LocalSecrets(directory.toString(), database), CLOCK);
             String id = providers.save(null, input(0, 0)).id();
             QuotaRuleRepository rules = new QuotaRuleRepository(database);
-            rules.save(id, List.of(
-                    new QuotaRuleInput(QuotaRule.Metric.INPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
-                            "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0),
-                    new QuotaRuleInput(QuotaRule.Metric.OUTPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
-                            "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
+            rules.save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.INPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
+                    "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
             AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
             var admission = attempts.admit(id, "scheme", "first", "model");
             attempts.finish(admission, "CANCELLED", null, null, false);
@@ -387,6 +384,32 @@ class QuotaAndPersistenceTest {
             assertThat(attempts.list(1, 0).get(0).usageState()).isEqualTo("RESERVED");
             assertThat(attempts.tryAdmit(id, "scheme", "second", "model", 0).rejectionCode())
                     .isEqualTo("QUOTA_EXHAUSTED");
+            rules.save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.OUTPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
+                    "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
+            assertThat(attempts.tryAdmit(id, "scheme", "third", "model", 0).rejectionCode())
+                    .isEqualTo("QUOTA_EXHAUSTED");
+        } finally {
+            database.close();
+        }
+    }
+
+    @Test
+    void reportedUsageReplacesReservationAndRejectedUsageDoesNotConsumeTokenQuota() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            new QuotaRuleRepository(database).save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.INPUT_TOKENS,
+                    QuotaRule.WindowType.DAY, 1, "UTC", 50, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var reported = attempts.admit(id, "scheme", "reported", "model");
+            attempts.finish(reported, "SUCCEEDED", 200, new Usage(5, 10, 0), false);
+            var rejected = attempts.admit(id, "scheme", "rejected", "model");
+            assertThat(rejected).isNotNull();
+            attempts.finish(rejected, "UPSTREAM_ERROR", 400, null, true);
+
+            assertThat(attempts.tryAdmit(id, "scheme", "next", "model", 0).admission()).isNotNull();
         } finally {
             database.close();
         }

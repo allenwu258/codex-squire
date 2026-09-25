@@ -19,7 +19,8 @@
 - 额度规则覆盖固定窗口和并发准入，但尚未支持成本指标、滚动自定义窗口和完整的供应商账单对账；预留预算不能保证供应商硬费用上限。
 - 统计已区分逻辑 requests、attempts 与跨日期 active attempts；跳过候选目前只在最终错误和 attempt 诊断中体现，没有独立 admission 事件表。
 - 触发换源的 429 响应体被释放，未解析其中可能存在的 usage；当前总 deadline 是单次 attempt 配置，多个候选没有共享 retry budget。
-- 前端轮询具备 AbortController、序号和编辑草稿隔离；统一 transport、离线缓存和多窗口实时协作仍未实现。
+- 前端轮询在上一轮完成后再等待 5 秒，并给每次管理请求保留 15 秒超时；统一 transport、离线缓存和多窗口实时协作仍未实现。
+- Provider 探测保留暂时性错误前的已确认能力，但尚无按模型的探测历史；未探测过的模型在临时失败后保持未知。
 - 前端管理调用和连通测试都使用 ApiClient，但 ApiClient 内部仍绑定 Web `fetch`；Tauri 阶段必须抽象 transport、进程归属、Origin 和凭据获取。
 - 不支持远程状态续接、compact、WebSocket、OAuth、会话管理和提示词管理；现有元数据不能视作这些能力已经实现。
 

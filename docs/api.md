@@ -85,11 +85,15 @@ Base URL 不包含最终 `/responses`；已有路径则在其后追加 `/respons
 
 统计顶层字段：`day`（UTC yyyy-MM-dd）、`requests`、`attempts`、`successes`、`failures`、`inFlight`、`inputTokens`、`outputTokens`、`cachedTokens`、`chargedTokens`、`uncertainRequests`、`providers`。顶层 `requests` 计逻辑请求；`attempts` 计准入的 Provider 尝试，均不计未准入的请求。`successes` 计 SUCCEEDED，`failures` 计除 IN_FLIGHT/SUCCEEDED 外的状态，包括取消和中断。providers 为当日有记录或仍有跨日活动尝试的来源聚合数组，每项的 `requests` 仍是 attempt 数，`inFlight` 跨所有日期计算。
 
+V8 升级时按历史 `attempts.request_id` 回填缺失的逻辑请求，因此同一次请求的多个 attempt 只计一次。旧记录没有原始 `stream` 元数据，回填值为 `false`，不能据此判断历史请求是否流式。
+
 `attempts` 中 requestId 用于关联故障转移前后的多次尝试，id 标识单次尝试。`usageState` 为 `REPORTED`、`RESERVED` 或 `NOT_APPLICABLE`。HTTP 状态与最终状态独立：流式响应可能 HTTP 200 但最终 `INCOMPLETE` 或 `CANCELLED`。
 
 attempts 返回数组，没有总条数包装。按 startedAt、id 倒序排列；字段为 `id`、`requestId`、`providerId`、`providerName`、`model`、`startedAt`、`endedAt`、`status`、`httpStatus`、`inputTokens`、`outputTokens`、`cachedTokens`、`chargedTokens`、`usageState`、`latencyMs`。endedAt 在途时为 null，httpStatus 尚未收到上游状态时为 null；缺失已报告用量时 token 数字为 0，必须结合 usageState 解读。latencyMs 在结算时写入，单位毫秒。
 
 状态包括 IN_FLIGHT、SUCCEEDED、FAILED、INCOMPLETE、RATE_LIMITED、UPSTREAM_ERROR、TRANSPORT_ERROR、CANCELLED、INTERRUPTED。`upstreamOutcome` 与 `deliveryOutcome` 独立保存，例如上游已完成但客户端取消可同时表示 `COMPLETED` 与 `CLIENT_CANCELLED`。3xx 使用 `UPSTREAM_REDIRECT` 分类并保留在 attempt 记录中。
+
+明确返回 `response.incomplete` 是合法上游终态，不触发 Provider 健康冷却；流或 JSON 缺少终态时记录 `UPSTREAM_TERMINAL_MISSING`，作为协议异常处理。超时在客户端错误、逻辑请求终态和 attempt `errorCode` 中统一使用 `UPSTREAM_TIMEOUT`。
 
 connection 返回 `baseUrl`（含 /v1）、`gatewayToken`、`dataDirectory`、`quotaTimeZone`（UTC）。它包含网关凭据，必须使用管理令牌读取，不应写入公开日志。`GET /api/health` 返回 `{"status":"UP","version":"0.1.0"}`，不证明上游来源可用。
 

@@ -126,7 +126,7 @@ test('management workflow, real proxy usage, editing, deletion and responsive vi
   await expect(page.getByText('主力 Provider 更新', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '删除 主力 Provider 更新', exact: true }).click();
   await page.getByRole('button', { name: '确认删除', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('referenced');
+  await expect(page.getByRole('alert')).toContainText('配置已被其他操作修改');
   await page.getByRole('button', { name: '取消', exact: true }).click();
   await page.getByRole('button', { name: '配置方案', exact: true }).click();
   await page.getByRole('button', { name: '编辑 日常开发', exact: true }).click();
