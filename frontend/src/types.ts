@@ -8,9 +8,10 @@ export interface Provider {
   maxConcurrency: number;
   tokenReservation: number;
   createdAt: string;
+  version: number;
 }
 
-export type ProviderInput = Omit<Provider, 'id' | 'createdAt'> & { apiKey: string };
+export type ProviderInput = Omit<Provider, 'id' | 'createdAt' | 'version'> & { apiKey: string };
 export interface Member { providerId: string; weight: number }
 export interface Scheme {
   id: string;
@@ -18,8 +19,9 @@ export interface Scheme {
   strategy: 'ORDERED' | 'BALANCED';
   active: boolean;
   members: Member[];
+  version: number;
 }
-export type SchemeInput = Omit<Scheme, 'id' | 'active'>;
+export type SchemeInput = Omit<Scheme, 'id' | 'active' | 'version'>;
 
 export interface ProviderUsage {
   providerId: string;

@@ -257,7 +257,8 @@ class GatewayIntegrationTest {
         String a = provider("a", 0, 0, 4);
         String b = provider("b", 0, 0, 4);
         String c = provider("c", 0, 0, 4);
-        admin.put().uri("/api/providers/" + a).bodyValue(providerInput("a", 0, 0, 4, "", false))
+        admin.put().uri("/api/providers/" + a).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(providerInput("a", 0, 0, 4, "", false))
                 .exchange().expectStatus().isOk();
         JsonNode result = admin.post().uri("/api/schemes").bodyValue(Map.of("name", "filtered-weighted", "strategy", "BALANCED",
                 "members", List.of(Map.of("providerId", a, "weight", 100), Map.of("providerId", b, "weight", 1),
@@ -331,7 +332,8 @@ class GatewayIntegrationTest {
         String id = provider("a", 0, 0, 4);
         admin.get().uri("/api/providers").exchange().expectBody(String.class)
                 .value(body -> assertThat(body).doesNotContain("test-upstream-secret", "encryptedKey"));
-        admin.put().uri("/api/providers/" + id).bodyValue(providerInput("renamed", 0, 0, 4, ""))
+        admin.put().uri("/api/providers/" + id).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(providerInput("renamed", 0, 0, 4, ""))
                 .exchange().expectStatus().isOk();
         String plan = scheme("ORDERED", List.of(id));
         admin.delete().uri("/api/providers/" + id).exchange().expectStatus().isEqualTo(409);
@@ -340,10 +342,36 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    void rejectsStaleProviderAndSchemeEdits() {
+        String id = provider("a", 0, 0, 4);
+        admin.put().uri("/api/providers/" + id).bodyValue(providerInput("first", 0, 0, 4, ""))
+                .exchange().expectStatus().isEqualTo(428);
+        admin.put().uri("/api/providers/" + id).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(providerInput("first", 0, 0, 4, ""))
+                .exchange().expectStatus().isOk().expectHeader().valueEquals(HttpHeaders.ETAG, "\"2\"")
+                .expectBody().jsonPath("$.version").isEqualTo(2);
+        admin.put().uri("/api/providers/" + id).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(providerInput("stale", 0, 0, 4, ""))
+                .exchange().expectStatus().isEqualTo(412).expectBody()
+                .jsonPath("$.error.code").isEqualTo("CONFIG_VERSION_CONFLICT");
+
+        String schemeId = scheme("ORDERED", List.of(id));
+        Map<String, Object> input = Map.of("name", "revised", "strategy", "ORDERED",
+                "members", List.of(Map.of("providerId", id, "weight", 1)));
+        admin.put().uri("/api/schemes/" + schemeId).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(input).exchange().expectStatus().isOk()
+                .expectHeader().valueEquals(HttpHeaders.ETAG, "\"2\"");
+        admin.put().uri("/api/schemes/" + schemeId).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(input).exchange().expectStatus().isEqualTo(412);
+        admin.get().uri("/api/schemes").exchange().expectBody().jsonPath("$[0].version").isEqualTo(2);
+    }
+
+    @Test
     void validatesInputsAndRollsBackInvalidSchemeMutation() {
         String id = provider("a", 0, 0, 4);
         String scheme = scheme("ORDERED", List.of(id));
-        admin.put().uri("/api/schemes/" + scheme).bodyValue(Map.of("name", "broken", "strategy", "ORDERED",
+        admin.put().uri("/api/schemes/" + scheme).header(HttpHeaders.IF_MATCH, "\"1\"")
+                .bodyValue(Map.of("name", "broken", "strategy", "ORDERED",
                 "members", List.of(Map.of("providerId", "missing", "weight", 1))))
                 .exchange().expectStatus().isEqualTo(409);
         admin.get().uri("/api/schemes").exchange().expectBody().jsonPath("$[0].members[0].providerId").isEqualTo(id);

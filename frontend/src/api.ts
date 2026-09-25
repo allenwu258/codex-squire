@@ -7,10 +7,11 @@ export class ApiError extends Error {
 export class ApiClient {
   constructor(private readonly token: string) {}
 
-  private async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+  private async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, version?: number): Promise<T> {
     const response = await fetch(`/api${path}`, {
       method,
-      headers: { Authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { Authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(version === undefined ? {} : { 'If-Match': `"${version}"` }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(15000),
     });
@@ -28,9 +29,12 @@ export class ApiClient {
   providerRuntime = (signal?: AbortSignal) => this.request<ProviderRuntimeState[]>('/provider-runtime', 'GET', undefined, signal);
   attempts = (offset = 0, signal?: AbortSignal) => this.request<Attempt[]>(`/attempts?limit=30&offset=${offset}`, 'GET', undefined, signal);
   connection = (signal?: AbortSignal) => this.request<Connection>('/connection', 'GET', undefined, signal);
-  saveProvider = (input: ProviderInput, id?: string) => this.request<Provider>(`/providers${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input);
+  saveProvider = (input: ProviderInput, id?: string, version?: number) => this.request<Provider>(
+    `/providers${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input, undefined, version);
   deleteProvider = (id: string) => this.request<void>(`/providers/${id}`, 'DELETE');
-  saveScheme = (input: SchemeInput, id?: string) => this.request<Scheme>(`/schemes${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input);
+  clearCooldown = (id: string) => this.request<void>(`/providers/${id}/runtime/clear-cooldown`, 'POST');
+  saveScheme = (input: SchemeInput, id?: string, version?: number) => this.request<Scheme>(
+    `/schemes${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input, undefined, version);
   deleteScheme = (id: string) => this.request<void>(`/schemes/${id}`, 'DELETE');
   activateScheme = (id: string) => this.request<Scheme>(`/schemes/${id}/activate`, 'POST');
 

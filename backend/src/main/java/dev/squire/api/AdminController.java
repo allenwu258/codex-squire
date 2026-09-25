@@ -22,6 +22,9 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -85,8 +88,11 @@ public class AdminController {
     }
 
     @PutMapping("/providers/{id}")
-    public Mono<Provider> updateProvider(@PathVariable String id, @Valid @RequestBody ProviderInput input) {
-        return Mono.fromCallable(() -> providers.save(id, input)).subscribeOn(scheduler);
+    public Mono<ResponseEntity<Provider>> updateProvider(@PathVariable String id, @Valid @RequestBody ProviderInput input,
+                                                         @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        long version = ConfigVersion.require(ifMatch);
+        return Mono.fromCallable(() -> providers.save(id, input, version))
+                .subscribeOn(scheduler).map(provider -> ResponseEntity.ok().eTag(Long.toString(provider.version())).body(provider));
     }
 
     @DeleteMapping("/providers/{id}")
@@ -116,6 +122,15 @@ public class AdminController {
         return probes.probe(id, model).subscribeOn(scheduler);
     }
 
+    @PostMapping("/providers/{id}/runtime/clear-cooldown")
+    public Mono<Void> clearCooldown(@PathVariable String id) {
+        return Mono.fromRunnable(() -> database.transaction(connection -> {
+            providers.find(connection, id);
+            runtime.clearCooldown(connection, id);
+            return null;
+        })).subscribeOn(scheduler).then();
+    }
+
     @GetMapping("/schemes")
     public Mono<List<Scheme>> schemes() {
         return Mono.fromCallable(schemes::list).subscribeOn(scheduler);
@@ -128,8 +143,11 @@ public class AdminController {
     }
 
     @PutMapping("/schemes/{id}")
-    public Mono<Scheme> updateScheme(@PathVariable String id, @Valid @RequestBody SchemeInput input) {
-        return Mono.fromCallable(() -> schemes.save(id, input)).subscribeOn(scheduler);
+    public Mono<ResponseEntity<Scheme>> updateScheme(@PathVariable String id, @Valid @RequestBody SchemeInput input,
+                                                     @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        long version = ConfigVersion.require(ifMatch);
+        return Mono.fromCallable(() -> schemes.save(id, input, version))
+                .subscribeOn(scheduler).map(scheme -> ResponseEntity.ok().eTag(Long.toString(scheme.version())).body(scheme));
     }
 
     @PostMapping("/schemes/{id}/activate")

@@ -49,7 +49,7 @@ function SchemeEditor({ scheme, api, providers, refresh, close }: {
       return { ...current, members };
     });
   }
-  return <Modal title={scheme ? '编辑方案' : '新建方案'} close={close}><SaveForm close={close} submit={async () => { await api.saveScheme(input, scheme?.id); await refresh(); }}>
+  return <Modal title={scheme ? '编辑方案' : '新建方案'} close={close}><SaveForm close={close} submit={async () => { await api.saveScheme(input, scheme?.id, scheme?.version); await refresh(); }}>
     <label>方案名称<input required autoFocus maxLength={80} value={input.name} onChange={event => setInput({ ...input, name: event.target.value })} placeholder="例如：日常开发" /></label>
     <label>路由策略</label><div className="segmented" role="group" aria-label="路由策略">
       <button type="button" aria-pressed={input.strategy === 'ORDERED'} onClick={() => setInput({ ...input, strategy: 'ORDERED' })}>按序使用</button>

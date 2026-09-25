@@ -12,6 +12,8 @@ const errorLabels: Record<string, string> = {
   UPSTREAM_CONNECTION_ERROR: '无法连接上游 Provider',
   NO_AVAILABLE_PROVIDER: '当前没有可接收请求的 Provider',
   CONFLICT: '配置已被其他操作修改，请刷新后重试',
+  CONFIG_VERSION_REQUIRED: '配置已更新，请重新加载后再保存',
+  CONFIG_VERSION_CONFLICT: '配置已被其他标签页修改，请重新加载后再保存',
 };
 export const errorMessage = (error: unknown) => {
   if (error && typeof error === 'object' && 'code' in error) {

@@ -19,7 +19,8 @@ public final class MigrationRunner {
             new Migration(3, "provider_runtime_state", "db/migration/V3__provider_runtime_state.sql"),
             new Migration(4, "request_diagnostics", "db/migration/V4__request_diagnostics.sql"),
             new Migration(5, "quota_rules", "db/migration/V5__quota_rules.sql"),
-            new Migration(6, "provider_capabilities", "db/migration/V6__provider_capabilities.sql"));
+            new Migration(6, "provider_capabilities", "db/migration/V6__provider_capabilities.sql"),
+            new Migration(7, "config_versions", "db/migration/V7__config_versions.sql"));
 
     public void migrate(Connection connection) throws IOException, SQLException {
         ensureMigrationsTable(connection);

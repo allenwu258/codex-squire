@@ -44,17 +44,25 @@ public final class SchemeRepository {
     }
 
     public Scheme save(String id, SchemeInput input) {
+        return save(id, input, null);
+    }
+
+    public Scheme save(String id, SchemeInput input, Long expectedVersion) {
         if (new HashSet<>(input.members().stream().map(SchemeInput.MemberInput::providerId).toList()).size() != input.members().size()) {
             throw new ApiException(400, "DUPLICATE_MEMBER", "A provider may appear only once in a scheme");
         }
         return database.transaction(connection -> {
             Scheme existing = id == null ? null : find(connection, id);
+            if (existing != null && expectedVersion != null && existing.version() != expectedVersion) {
+                throw new ApiException(412, "CONFIG_VERSION_CONFLICT", "Scheme changed since it was loaded");
+            }
             if (existing != null && existing.active() && input.members().isEmpty()) {
                 throw new ApiException(409, "EMPTY_ACTIVE_SCHEME", "The active scheme must have at least one member");
             }
             String targetId = existing == null ? UUID.randomUUID().toString() : id;
             try (var statement = connection.prepareStatement("INSERT INTO schemes(id,name,strategy) VALUES(?,?,?) "
-                    + "ON CONFLICT(id) DO UPDATE SET name=excluded.name,strategy=excluded.strategy")) {
+                    + "ON CONFLICT(id) DO UPDATE SET name=excluded.name,strategy=excluded.strategy,"
+                    + "version=schemes.version+1")) {
                 statement.setString(1, targetId);
                 statement.setString(2, input.name().trim());
                 statement.setString(3, input.strategy().name());
@@ -127,7 +135,7 @@ public final class SchemeRepository {
                     }
                 }
                 return new Scheme(id, result.getString("name"), Scheme.Strategy.valueOf(result.getString("strategy")),
-                        result.getBoolean("active"), List.copyOf(members));
+                        result.getBoolean("active"), List.copyOf(members), result.getLong("version"));
             }
         }
     }

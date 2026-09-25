@@ -54,12 +54,19 @@ public final class ProviderRepository {
     }
 
     public Provider save(String id, ProviderInput input) {
+        return save(id, input, null);
+    }
+
+    public Provider save(String id, ProviderInput input, Long expectedVersion) {
         String baseUrl = input.normalizedBaseUrl();
         if (input.apiKey() != null && (input.apiKey().contains("\n") || input.apiKey().contains("\r"))) {
             throw new ApiException(400, "INVALID_API_KEY", "API key must not contain line breaks");
         }
         return database.transaction(connection -> {
             Provider existing = id == null ? null : find(connection, id);
+            if (existing != null && expectedVersion != null && existing.version() != expectedVersion) {
+                throw new ApiException(412, "CONFIG_VERSION_CONFLICT", "Provider changed since it was loaded");
+            }
             String encrypted = input.apiKey() == null || input.apiKey().isBlank()
                     ? (existing == null ? null : existing.encryptedKey()) : secrets.encrypt(input.apiKey().trim());
             if (encrypted == null) {
@@ -73,7 +80,8 @@ public final class ProviderRepository {
                     + "ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,"
                     + "encrypted_key=excluded.encrypted_key,enabled=excluded.enabled,"
                     + "daily_request_limit=excluded.daily_request_limit,daily_token_limit=excluded.daily_token_limit,"
-                    + "max_concurrency=excluded.max_concurrency,token_reservation=excluded.token_reservation")) {
+                    + "max_concurrency=excluded.max_concurrency,token_reservation=excluded.token_reservation,"
+                    + "version=providers.version+1")) {
                 statement.setString(1, targetId);
                 statement.setString(2, input.name().trim());
                 statement.setString(3, baseUrl);
@@ -106,6 +114,6 @@ public final class ProviderRepository {
         return new Provider(row.getString("id"), row.getString("name"), row.getString("base_url"),
                 row.getString("encrypted_key"), row.getBoolean("enabled"), row.getLong("daily_request_limit"),
                 row.getLong("daily_token_limit"), row.getInt("max_concurrency"),
-                row.getLong("token_reservation"), row.getString("created_at"));
+                row.getLong("token_reservation"), row.getString("created_at"), row.getLong("version"));
     }
 }
