@@ -25,6 +25,9 @@ public final class QuotaRuleRepository {
 
     public List<QuotaRule> save(String providerId, List<QuotaRuleInput> inputs) {
         return database.transaction(connection -> {
+            if (inputs.stream().anyMatch(input -> input.action() == QuotaRule.Action.DEGRADE)) {
+                throw new ApiException(400, "UNSUPPORTED_QUOTA_ACTION", "Model degradation requires a configured model mapping");
+            }
             try (var statement = connection.prepareStatement("SELECT 1 FROM providers WHERE id=?")) {
                 statement.setString(1, providerId);
                 try (var result = statement.executeQuery()) {
@@ -64,6 +67,9 @@ public final class QuotaRuleRepository {
 
     public Decision evaluate(Connection connection, String providerId, Instant now) throws SQLException {
         for (QuotaRule rule : list(connection, providerId)) {
+            if (!rule.enabled()) {
+                continue;
+            }
             long current = usage(connection, rule, now);
             if (current >= rule.threshold()) {
                 return new Decision(false, rule.action().name(), rule.action().name() + "_" + rule.metric().name());
@@ -104,7 +110,7 @@ public final class QuotaRuleRepository {
 
     private List<QuotaRule> list(Connection connection, String providerId) throws SQLException {
         List<QuotaRule> rules = new ArrayList<>();
-        try (var statement = connection.prepareStatement("SELECT * FROM quota_rules WHERE provider_id=? AND enabled=1 "
+        try (var statement = connection.prepareStatement("SELECT * FROM quota_rules WHERE provider_id=? "
                 + "ORDER BY priority DESC,id")) {
             statement.setString(1, providerId);
             try (var result = statement.executeQuery()) {

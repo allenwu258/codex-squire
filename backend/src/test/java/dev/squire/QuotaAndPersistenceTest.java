@@ -292,6 +292,29 @@ class QuotaAndPersistenceTest {
         }
     }
 
+    @Test
+    void disabledQuotaRulesAreReadableButDoNotBlockAndDegradeIsRejected() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            LocalSecrets secrets = new LocalSecrets(directory.toString(), database);
+            ProviderRepository providers = new ProviderRepository(database, secrets, CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            QuotaRuleRepository rules = new QuotaRuleRepository(database);
+            rules.save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.REQUEST_COUNT,
+                    QuotaRule.WindowType.DAY, 1, "UTC", 1, QuotaRule.Action.SKIP_PROVIDER, false, 0)));
+
+            assertThat(rules.list(id)).singleElement().extracting(QuotaRule::enabled).isEqualTo(false);
+            assertThat(new AttemptRepository(database, providers, CLOCK)
+                    .admit(id, "scheme", "request", "model")).isNotNull();
+            assertThatThrownBy(() -> rules.save(id, List.of(new QuotaRuleInput(QuotaRule.Metric.REQUEST_COUNT,
+                    QuotaRule.WindowType.DAY, 1, "UTC", 1, QuotaRule.Action.DEGRADE, true, 0))))
+                    .isInstanceOf(dev.squire.api.ApiException.class)
+                    .hasMessageContaining("Model degradation");
+        } finally {
+            database.close();
+        }
+    }
+
     private ProviderInput input(long requests, long tokens) {
         return new ProviderInput("provider", "https://api.example.com/v1", "upstream-key", true, requests, tokens, 128, 100);
     }

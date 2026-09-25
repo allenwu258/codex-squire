@@ -1,4 +1,4 @@
-import type { Attempt, Connection, Provider, ProviderInput, ProviderRuntimeState, Scheme, SchemeInput, Statistics } from './types';
+import type { Attempt, Connection, Provider, ProviderCapability, ProviderInput, ProviderProbeResult, ProviderRuntimeState, QuotaRule, QuotaRuleInput, Scheme, SchemeInput, Statistics } from './types';
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string, public readonly code?: string) { super(message); }
@@ -33,6 +33,10 @@ export class ApiClient {
     `/providers${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input, undefined, version);
   deleteProvider = (id: string) => this.request<void>(`/providers/${id}`, 'DELETE');
   clearCooldown = (id: string) => this.request<void>(`/providers/${id}/runtime/clear-cooldown`, 'POST');
+  quotaRules = (id: string, signal?: AbortSignal) => this.request<QuotaRule[]>(`/providers/${id}/quota-rules`, 'GET', undefined, signal);
+  saveQuotaRules = (id: string, rules: QuotaRuleInput[]) => this.request<QuotaRule[]>(`/providers/${id}/quota-rules`, 'PUT', rules);
+  capabilities = (id: string, signal?: AbortSignal) => this.request<ProviderCapability[]>(`/providers/${id}/capabilities`, 'GET', undefined, signal);
+  probeProvider = (id: string, model: string) => this.request<ProviderProbeResult>(`/providers/${id}/probe?model=${encodeURIComponent(model)}`, 'POST');
   saveScheme = (input: SchemeInput, id?: string, version?: number) => this.request<Scheme>(
     `/schemes${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', input, undefined, version);
   deleteScheme = (id: string) => this.request<void>(`/schemes/${id}`, 'DELETE');

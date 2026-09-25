@@ -14,6 +14,9 @@ const errorLabels: Record<string, string> = {
   CONFLICT: '配置已被其他操作修改，请刷新后重试',
   CONFIG_VERSION_REQUIRED: '配置已更新，请重新加载后再保存',
   CONFIG_VERSION_CONFLICT: '配置已被其他标签页修改，请重新加载后再保存',
+  PROBE_BUSY: '当前探测任务已满，请稍后重试',
+  UNSUPPORTED_QUOTA_ACTION: '模型降级规则需要先配置模型映射',
+  QUOTA_EXCEEDED: '额度规则已拒绝本次请求',
 };
 export const errorMessage = (error: unknown) => {
   if (error && typeof error === 'object' && 'code' in error) {

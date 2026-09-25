@@ -86,6 +86,38 @@ export interface ProviderRuntimeState {
   averageLatencyMs: number;
   lastResponseStatus: number | null;
 }
+export type QuotaMetric = 'REQUEST_COUNT' | 'INPUT_TOKENS' | 'OUTPUT_TOKENS' | 'TOTAL_TOKENS' | 'CONCURRENT_REQUESTS';
+export type QuotaWindow = 'MINUTE' | 'HOUR' | 'DAY' | 'WEEK' | 'MONTH';
+export type QuotaAction = 'SKIP_PROVIDER' | 'REJECT_REQUEST' | 'ENTER_COOLDOWN';
+export interface QuotaRuleInput {
+  metric: QuotaMetric;
+  windowType: QuotaWindow;
+  windowSize: number;
+  timezone: string;
+  threshold: number;
+  action: QuotaAction;
+  enabled: boolean;
+  priority: number;
+}
+export interface QuotaRule extends QuotaRuleInput { id: string; providerId: string }
+export interface ProviderCapability {
+  providerId: string;
+  model: string;
+  supportsResponses: boolean;
+  supportsSse: boolean;
+  usageSupport: string;
+  lastProbeAt: string;
+  lastError: string | null;
+}
+export interface ProviderProbeResult {
+  providerId: string;
+  model: string;
+  supportsResponses: boolean;
+  supportsSse: boolean;
+  usageSupport: string;
+  lastProbeAt: string;
+  error: string | null;
+}
 export interface Connection {
   baseUrl: string;
   gatewayToken: string;
