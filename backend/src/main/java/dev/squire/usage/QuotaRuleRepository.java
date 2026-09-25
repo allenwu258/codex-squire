@@ -90,10 +90,9 @@ public final class QuotaRuleRepository {
         }
         String expression = switch (rule.metric()) {
             case REQUEST_COUNT -> "COUNT(*)";
-            // An in-flight reservation has no input/output split. Count it conservatively
-            // against either token dimension so a configured window cannot over-admit work.
-            case INPUT_TOKENS -> "COALESCE(SUM(CASE WHEN status='IN_FLIGHT' THEN reserved_tokens ELSE input_tokens END),0)";
-            case OUTPUT_TOKENS -> "COALESCE(SUM(CASE WHEN status='IN_FLIGHT' THEN reserved_tokens ELSE output_tokens END),0)";
+            // A reservation remains the local quota charge until upstream usage is reported.
+            case INPUT_TOKENS -> "COALESCE(SUM(CASE WHEN usage_state='RESERVED' THEN charged_tokens ELSE input_tokens END),0)";
+            case OUTPUT_TOKENS -> "COALESCE(SUM(CASE WHEN usage_state='RESERVED' THEN charged_tokens ELSE output_tokens END),0)";
             case TOTAL_TOKENS -> "COALESCE(SUM(charged_tokens),0)";
             case CONCURRENT_REQUESTS -> throw new IllegalStateException("Concurrent usage is handled separately");
         };

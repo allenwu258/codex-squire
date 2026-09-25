@@ -315,6 +315,31 @@ class QuotaAndPersistenceTest {
         }
     }
 
+    @Test
+    void inputAndOutputQuotasRetainUnreportedReservationsAfterSettlement() throws Exception {
+        Database database = new Database(directory.toString());
+        try {
+            ProviderRepository providers = new ProviderRepository(database,
+                    new LocalSecrets(directory.toString(), database), CLOCK);
+            String id = providers.save(null, input(0, 0)).id();
+            QuotaRuleRepository rules = new QuotaRuleRepository(database);
+            rules.save(id, List.of(
+                    new QuotaRuleInput(QuotaRule.Metric.INPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
+                            "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0),
+                    new QuotaRuleInput(QuotaRule.Metric.OUTPUT_TOKENS, QuotaRule.WindowType.DAY, 1,
+                            "UTC", 100, QuotaRule.Action.SKIP_PROVIDER, true, 0)));
+            AttemptRepository attempts = new AttemptRepository(database, providers, CLOCK);
+            var admission = attempts.admit(id, "scheme", "first", "model");
+            attempts.finish(admission, "CANCELLED", null, null, false);
+
+            assertThat(attempts.list(1, 0).get(0).usageState()).isEqualTo("RESERVED");
+            assertThat(attempts.tryAdmit(id, "scheme", "second", "model", 0).rejectionCode())
+                    .isEqualTo("QUOTA_EXHAUSTED");
+        } finally {
+            database.close();
+        }
+    }
+
     private ProviderInput input(long requests, long tokens) {
         return new ProviderInput("provider", "https://api.example.com/v1", "upstream-key", true, requests, tokens, 128, 100);
     }
