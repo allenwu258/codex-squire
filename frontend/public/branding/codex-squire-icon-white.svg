@@ -34,7 +34,7 @@
     <clipPath id="clipL"><rect x="0" y="0" width="460" height="800"/></clipPath>
     <clipPath id="clipR"><rect x="460" y="0" width="460" height="800"/></clipPath>
   </defs>
-  
+
   <!-- 盾牌外环 + 内环 -->
   <g fill-rule="evenodd">
     <g clip-path="url(#clipR)">

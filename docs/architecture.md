@@ -159,9 +159,11 @@ UsageInspector 只观察数据：
 
 ## 10. Tauri 与后续模块
 
-未来 Tauri 只负责窗口、托盘、单实例、后端进程生命周期和受控的凭据获取。Java 后端继续拥有 Provider、路由、额度和 SQLite。当前管理接口和 Connection 组件都经过 ApiClient，但网关请求仍由 ApiClient 内部直接使用 Web `fetch`，尚未抽象可替换的 Web/Tauri transport。打包页面没有 Vite 代理，不能仅将 dist 放入 Tauri 就视为完成。
+当前已加入 `src-tauri` 的 Tauri v2 启动器骨架。Tauri 只负责窗口、运行模式、动态端口、Java 后端进程生命周期、服务模式静态前端和退出回收。Java 后端继续拥有 Provider、路由、额度和 SQLite。`ApiClient` 已支持绝对后端 Base URL，浏览器继续使用相对路径和 Vite 代理，Tauri 使用运行时返回的后端地址。
 
-桌面打包前需要解决：JRE 裁剪或打包、Java 子进程退出回收、后端就绪握手、动态端口发现、Tauri origin/CSP、系统凭据库和升级迁移。本版没有声称这些已经实现。
+本地模式使用 Tauri 内置 React 资源；服务模式由 Rust 静态服务器提供前端，默认绑定 `127.0.0.1`，明确选择后才绑定 `0.0.0.0`。Windows 便携式发布包已支持随包精简 JRE、后端 JAR 和前端 dist；安装升级、系统凭据库、Job Object 和服务模式监听隔离仍待完成。详细运行时设计见 [桌面客户端架构](desktop.md)。
+
+桌面打包仍需要完善：Java 子进程退出回收、安装升级、后端就绪握手的失败诊断、动态端口发现、Tauri origin/CSP、系统凭据库和升级迁移。Windows 便携式 ZIP 的 JRE 裁剪、资源布局和运行时发现已由 `scripts/package-release.ps1` 实现。
 
 会话管理应新增 session 领域并解决 response ID 到 Provider 的持久化绑定；提示词管理新增 prompt 领域，不依赖网关内部日志正文。日志归档、按时段统计和基于实际延迟的负载均衡可在保留现有 API 的前提下演进。
 
