@@ -13,7 +13,8 @@ function Read-SquireEnvironment {
     }
     $required = @('JAVA_HOME', 'SQUIRE_PORT', 'SQUIRE_WEB_PORT', 'SQUIRE_DATA_DIR',
         'SQUIRE_UPSTREAM_IDLE_SECONDS', 'SQUIRE_UPSTREAM_TOTAL_SECONDS')
-    $allowed = $required + @('SQUIRE_NODE_HOME')
+    $allowed = $required + @('SQUIRE_NODE_HOME', 'SQUIRE_BIND_ADDRESS', 'SQUIRE_PUBLIC_BASE_URL',
+        'SQUIRE_WEB_BIND_ADDRESS', 'SQUIRE_ALLOWED_ORIGINS')
     $values = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
     $lineNumber = 0
     foreach ($line in [IO.File]::ReadAllLines($file)) {
@@ -49,6 +50,20 @@ function Read-SquireEnvironment {
     if (-not [IO.Path]::IsPathFullyQualified($values['JAVA_HOME'])) { throw 'JAVA_HOME must be an absolute JDK directory.' }
     $nodeHome = if ($values.ContainsKey('SQUIRE_NODE_HOME')) { $values['SQUIRE_NODE_HOME'] } else { '' }
     if ($nodeHome -and -not [IO.Path]::IsPathFullyQualified($nodeHome)) { throw 'SQUIRE_NODE_HOME must be an absolute directory or empty.' }
+    $bindAddress = if ($values.ContainsKey('SQUIRE_BIND_ADDRESS') -and $values['SQUIRE_BIND_ADDRESS']) {
+        $values['SQUIRE_BIND_ADDRESS']
+    } else { '127.0.0.1' }
+    $webBindAddress = if ($values.ContainsKey('SQUIRE_WEB_BIND_ADDRESS') -and $values['SQUIRE_WEB_BIND_ADDRESS']) {
+        $values['SQUIRE_WEB_BIND_ADDRESS']
+    } else { '127.0.0.1' }
+    foreach ($address in @($bindAddress, $webBindAddress)) {
+        if ($address -notmatch '^[A-Za-z0-9.:%\[\]-]+$') { throw 'Bind addresses may contain only a host or IP literal.' }
+    }
+    $publicBaseUrl = if ($values.ContainsKey('SQUIRE_PUBLIC_BASE_URL')) { $values['SQUIRE_PUBLIC_BASE_URL'].TrimEnd('/') } else { '' }
+    if ($publicBaseUrl -and $publicBaseUrl -notmatch '^https?://[^\s/]+(?::\d+)?(?:/[^\s]*)?$') {
+        throw 'SQUIRE_PUBLIC_BASE_URL must be an absolute HTTP(S) URL.'
+    }
+    $configuredOrigins = if ($values.ContainsKey('SQUIRE_ALLOWED_ORIGINS')) { $values['SQUIRE_ALLOWED_ORIGINS'] } else { '' }
     return [pscustomobject]@{
         File = $file
         JavaHome = [IO.Path]::GetFullPath($values['JAVA_HOME'])
@@ -56,9 +71,12 @@ function Read-SquireEnvironment {
         BackendPort = $backendPort
         WebPort = $webPort
         DataDirectory = [IO.Path]::GetFullPath($values['SQUIRE_DATA_DIR'], $root)
+        BindAddress = $bindAddress
+        WebBindAddress = $webBindAddress
+        PublicBaseUrl = $publicBaseUrl
         BackendUrl = "http://127.0.0.1:$backendPort"
         WebUrl = "http://127.0.0.1:$webPort"
-        AllowedOrigins = "http://127.0.0.1:$webPort,http://localhost:$webPort"
+        AllowedOrigins = if ($configuredOrigins) { $configuredOrigins } else { "http://127.0.0.1:$webPort,http://localhost:$webPort" }
         IdleSeconds = $idleSeconds
         TotalSeconds = $totalSeconds
     }

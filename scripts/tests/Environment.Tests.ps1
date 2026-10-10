@@ -12,6 +12,10 @@ JAVA_HOME="$javaFixture"
 SQUIRE_NODE_HOME=
 SQUIRE_PORT=18787
 SQUIRE_WEB_PORT=15173
+SQUIRE_BIND_ADDRESS=0.0.0.0
+SQUIRE_PUBLIC_BASE_URL=http://192.168.1.20:18787
+SQUIRE_WEB_BIND_ADDRESS=0.0.0.0
+SQUIRE_ALLOWED_ORIGINS=*
 SQUIRE_DATA_DIR='state with spaces=a'
 SQUIRE_UPSTREAM_IDLE_SECONDS=30
 SQUIRE_UPSTREAM_TOTAL_SECONDS=60
@@ -36,7 +40,14 @@ try {
     Assert-Equal $config.JavaHome $javaFixture 'quoted JDK path'
     Assert-Equal $config.DataDirectory (Join-Path $temporary 'state with spaces=a') 'relative data path and literal equals sign'
     Assert-Equal $config.BackendUrl 'http://127.0.0.1:18787' 'derived backend URL'
-    Assert-Equal $config.AllowedOrigins 'http://127.0.0.1:15173,http://localhost:15173' 'derived origins'
+    Assert-Equal $config.AllowedOrigins '*' 'explicit origins'
+    Assert-Equal $config.BindAddress '0.0.0.0' 'backend bind address'
+    Assert-Equal $config.WebBindAddress '0.0.0.0' 'frontend bind address'
+    Assert-Equal $config.PublicBaseUrl 'http://192.168.1.20:18787' 'public base URL'
+    $derived = Read-SquireEnvironment -Path $configFile -ProjectRoot $temporary
+    [IO.File]::WriteAllText($configFile, $valid.Replace('SQUIRE_ALLOWED_ORIGINS=*', ''))
+    $derived = Read-SquireEnvironment -Path $configFile -ProjectRoot $temporary
+    Assert-Equal $derived.AllowedOrigins 'http://127.0.0.1:15173,http://localhost:15173' 'derived origins'
     $passed++
     $missing = $null
     try { Read-SquireEnvironment -Path 'missing.env' -ProjectRoot $temporary | Out-Null } catch { $missing = $_ }
@@ -61,6 +72,10 @@ try {
     Assert-Rejected ($valid.Replace("JAVA_HOME=`"$javaFixture`"", 'JAVA_HOME=relative-jdk')) 'absolute JDK directory'
     $passed++
     Assert-Rejected ($valid.Replace('SQUIRE_PORT=18787', 'SQUIRE_PORT=$(throw "must not execute")')) 'SQUIRE_PORT as an integer'
+    $passed++
+    Assert-Rejected ($valid.Replace('SQUIRE_BIND_ADDRESS=0.0.0.0', 'SQUIRE_BIND_ADDRESS=bad/address')) 'Bind addresses'
+    $passed++
+    Assert-Rejected ($valid.Replace('SQUIRE_PUBLIC_BASE_URL=http://192.168.1.20:18787', 'SQUIRE_PUBLIC_BASE_URL=not-a-url')) 'SQUIRE_PUBLIC_BASE_URL'
     $passed++
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $listener.Start()

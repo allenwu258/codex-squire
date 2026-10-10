@@ -12,6 +12,10 @@
 | `SQUIRE_NODE_HOME` | 否 | Node.js/pnpm 所在绝对目录；空值或省略时使用 PATH |
 | `SQUIRE_PORT` | 是 | 后端端口，1024..65535 |
 | `SQUIRE_WEB_PORT` | 是 | 网页端口，1024..65535，不能等于后端端口 |
+| `SQUIRE_BIND_ADDRESS` | 否 | 后端监听地址，默认 `127.0.0.1`；服务模式使用 `0.0.0.0` |
+| `SQUIRE_PUBLIC_BASE_URL` | 否 | Connection 页面公布的后端根 URL；不得填写 `0.0.0.0` |
+| `SQUIRE_WEB_BIND_ADDRESS` | 否 | Vite/服务前端监听地址，默认 `127.0.0.1` |
+| `SQUIRE_ALLOWED_ORIGINS` | 否 | 逗号分隔的浏览器 Origin；服务模式广播可显式使用 `*` |
 | `SQUIRE_DATA_DIR` | 是 | 数据目录；相对路径以项目根目录为基准 |
 | `SQUIRE_UPSTREAM_IDLE_SECONDS` | 是 | 上游读空闲超时，1..86400 秒 |
 | `SQUIRE_UPSTREAM_TOTAL_SECONDS` | 是 | 单次上游尝试总超时，1..86400 秒，不能小于读空闲超时 |
@@ -27,6 +31,10 @@ JAVA_HOME=C:\SDK\Java\17\graalvm-jdk-17.0.9
 SQUIRE_NODE_HOME=C:\SDK\NodeJS
 SQUIRE_PORT=8787
 SQUIRE_WEB_PORT=5173
+SQUIRE_BIND_ADDRESS=127.0.0.1
+SQUIRE_PUBLIC_BASE_URL=
+SQUIRE_WEB_BIND_ADDRESS=127.0.0.1
+SQUIRE_ALLOWED_ORIGINS=
 SQUIRE_DATA_DIR="C:\Users\YourName\.codex-squire"
 SQUIRE_UPSTREAM_IDLE_SECONDS=120
 SQUIRE_UPSTREAM_TOTAL_SECONDS=1800

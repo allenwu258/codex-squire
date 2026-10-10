@@ -11,6 +11,8 @@ $configuration = Read-SquireEnvironment -Path $EnvFile -ProjectRoot $PSScriptRoo
 Assert-SquirePortAvailable $configuration.BackendPort 'SQUIRE_PORT'
 $java = Initialize-SquireJava $configuration
 $env:SQUIRE_PORT = "$($configuration.BackendPort)"
+$env:SQUIRE_BIND_ADDRESS = $configuration.BindAddress
+$env:SQUIRE_PUBLIC_BASE_URL = $configuration.PublicBaseUrl
 $env:SQUIRE_DATA_DIR = $configuration.DataDirectory
 $env:SQUIRE_ALLOWED_ORIGINS = $configuration.AllowedOrigins
 $env:SQUIRE_UPSTREAM_IDLE_SECONDS = "$($configuration.IdleSeconds)"

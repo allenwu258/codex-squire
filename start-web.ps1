@@ -21,6 +21,6 @@ try {
     Write-Host "Configuration: $($configuration.File)"
     Write-Host "Web: $($configuration.WebUrl)"
     Write-Host "Backend proxy: $($configuration.BackendUrl)"
-    & pnpm dev --port $configuration.WebPort --strictPort
+    & pnpm dev --host $configuration.WebBindAddress --port $configuration.WebPort --strictPort
     if ($LASTEXITCODE -ne 0) { throw "Frontend exited with code $LASTEXITCODE" }
 } finally { Pop-Location }

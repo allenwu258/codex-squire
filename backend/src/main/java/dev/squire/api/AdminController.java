@@ -53,11 +53,13 @@ public class AdminController {
     private final LocalSecrets secrets;
     private final Scheduler scheduler;
     private final String dataDirectory;
+    private final String publicBaseUrl;
 
     public AdminController(ProviderRepository providers, SchemeRepository schemes, AttemptRepository attempts,
                            Database database, LocalSecrets secrets, CapabilityRepository capabilities,
                            ProviderProbeService probes, Scheduler databaseScheduler,
-                           @Value("${squire.data-dir}") String dataDirectory) {
+                           @Value("${squire.data-dir}") String dataDirectory,
+                           @Value("${squire.public-base-url:}") String publicBaseUrl) {
         this.providers = providers;
         this.schemes = schemes;
         this.attempts = attempts;
@@ -69,6 +71,7 @@ public class AdminController {
         this.secrets = secrets;
         scheduler = databaseScheduler;
         this.dataDirectory = dataDirectory;
+        this.publicBaseUrl = publicBaseUrl == null ? "" : publicBaseUrl.trim();
     }
 
     @GetMapping("/health")
@@ -183,7 +186,16 @@ public class AdminController {
     @GetMapping("/connection")
     public Map<String, String> connection(ServerWebExchange exchange) {
         int port = exchange.getRequest().getLocalAddress().getPort();
-        return Map.of("baseUrl", "http://127.0.0.1:" + port + "/v1", "gatewayToken", secrets.gatewayToken(),
+        String base = publicBaseUrl.isBlank() ? "http://127.0.0.1:" + port : trimTrailingSlash(publicBaseUrl);
+        return Map.of("baseUrl", base + "/v1", "gatewayToken", secrets.gatewayToken(),
                 "dataDirectory", dataDirectory, "quotaTimeZone", "UTC");
+    }
+
+    private String trimTrailingSlash(String value) {
+        int end = value.length();
+        while (end > 0 && value.charAt(end - 1) == '/') {
+            end--;
+        }
+        return value.substring(0, end);
     }
 }

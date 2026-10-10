@@ -1,5 +1,5 @@
 server:
-  address: 127.0.0.1
+  address: ${SQUIRE_BIND_ADDRESS:127.0.0.1}
   port: ${SQUIRE_PORT:8787}
   shutdown: graceful
 spring:
@@ -11,6 +11,7 @@ spring:
     timeout-per-shutdown-phase: 15s
 squire:
   data-dir: ${SQUIRE_DATA_DIR:${user.home}/.codex-squire}
+  public-base-url: ${SQUIRE_PUBLIC_BASE_URL:}
   allowed-origins: ${SQUIRE_ALLOWED_ORIGINS:http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174}
   upstream-idle-seconds: ${SQUIRE_UPSTREAM_IDLE_SECONDS:120}
   upstream-total-seconds: ${SQUIRE_UPSTREAM_TOTAL_SECONDS:1800}

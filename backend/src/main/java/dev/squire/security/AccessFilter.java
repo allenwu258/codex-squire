@@ -22,10 +22,14 @@ import reactor.core.publisher.Mono;
 public final class AccessFilter implements WebFilter {
     private final LocalSecrets secrets;
     private final Set<String> origins;
+    private final boolean allowAllOrigins;
 
     public AccessFilter(LocalSecrets secrets, @Value("${squire.allowed-origins}") String allowedOrigins) {
         this.secrets = secrets;
-        origins = Arrays.stream(allowedOrigins.split(",")).map(String::trim).collect(Collectors.toUnmodifiableSet());
+        String configured = allowedOrigins == null ? "" : allowedOrigins.trim();
+        allowAllOrigins = "*".equals(configured);
+        origins = Arrays.stream(configured.split(",")).map(String::trim).filter(value -> !value.isBlank())
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     @Override
@@ -37,7 +41,7 @@ public final class AccessFilter implements WebFilter {
         headers.setCacheControl("no-store");
         headers.set("X-Content-Type-Options", "nosniff");
         if (origin != null) {
-            if (!origins.contains(origin)) {
+            if (!allowAllOrigins && !origins.contains(origin)) {
                 return reject(exchange, HttpStatus.FORBIDDEN, "ORIGIN_DENIED");
             }
             headers.setAccessControlAllowOrigin(origin);
