@@ -9,7 +9,12 @@ export interface ClientRuntime {
   adminTokenPath: string;
 }
 
-export interface StartRuntimeRequest {
+export interface RuntimePortSettings {
+  backendPort: number;
+  frontendPort: number;
+}
+
+export interface StartRuntimeRequest extends RuntimePortSettings {
   mode: RuntimeMode;
   frontendBroadcast: boolean;
   advertisedHost: string;
@@ -63,6 +68,10 @@ export async function stopDesktopRuntime(): Promise<void> {
 export async function desktopRuntimeStatus(): Promise<ClientRuntime | null> {
   if (!isDesktopApp()) return null;
   return invokeTauri<ClientRuntime | null>('runtime_status');
+}
+
+export async function desktopRuntimePortSettings(): Promise<RuntimePortSettings> {
+  return invokeTauri<RuntimePortSettings>('runtime_port_settings');
 }
 
 /** Convert the different rejection shapes used by Tauri versions into text.

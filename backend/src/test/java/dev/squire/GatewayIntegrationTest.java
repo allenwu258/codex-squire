@@ -125,6 +125,7 @@ class GatewayIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("squire.data-dir", DATA::toString);
+        registry.add("squire.runtime-id", () -> "integration-runtime");
         registry.add("squire.upstream-total-seconds", () -> 3);
     }
 
@@ -464,7 +465,8 @@ class GatewayIntegrationTest {
                 .exchange().expectStatus().isUnauthorized();
         admin.get().uri("/api/providers").header(HttpHeaders.ORIGIN, "https://evil.example")
                 .exchange().expectStatus().isForbidden();
-        client("wrong").get().uri("/api/health").exchange().expectStatus().isOk();
+        client("wrong").get().uri("/api/health").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.runtimeId").isEqualTo("integration-runtime");
     }
 
     @Test

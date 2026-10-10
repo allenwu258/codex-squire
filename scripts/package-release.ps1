@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.2.1',
+    [string]$Version = '0.2.2',
     [string]$JdkHome = '',
     [string]$OutputDirectory = ''
 )
@@ -110,6 +110,8 @@ The package includes its own Java 17 runtime, backend JAR, and frontend assets.
 No JAVA_HOME, SQUIRE_BACKEND_JAR, or SQUIRE_FRONTEND_DIST environment variable is required.
 
 The first screen lets you choose local mode or trusted-LAN service mode.
+The default backend port is 18787; the service-mode frontend port is 18788.
+Ports can be changed on the first screen and are saved after a successful start.
 Application data is stored in the normal Windows application data directory.
 "@
 Set-Content -LiteralPath (Join-Path $packageRoot 'README.txt') -Value $readme -Encoding UTF8

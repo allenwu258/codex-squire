@@ -54,12 +54,14 @@ public class AdminController {
     private final Scheduler scheduler;
     private final String dataDirectory;
     private final String publicBaseUrl;
+    private final String runtimeId;
 
     public AdminController(ProviderRepository providers, SchemeRepository schemes, AttemptRepository attempts,
                            Database database, LocalSecrets secrets, CapabilityRepository capabilities,
                            ProviderProbeService probes, Scheduler databaseScheduler,
                            @Value("${squire.data-dir}") String dataDirectory,
-                           @Value("${squire.public-base-url:}") String publicBaseUrl) {
+                           @Value("${squire.public-base-url:}") String publicBaseUrl,
+                           @Value("${squire.runtime-id:}") String runtimeId) {
         this.providers = providers;
         this.schemes = schemes;
         this.attempts = attempts;
@@ -72,11 +74,13 @@ public class AdminController {
         scheduler = databaseScheduler;
         this.dataDirectory = dataDirectory;
         this.publicBaseUrl = publicBaseUrl == null ? "" : publicBaseUrl.trim();
+        this.runtimeId = runtimeId;
     }
 
     @GetMapping("/health")
     public Map<String, String> health() {
-        return Map.of("status", "UP", "version", "0.2.1");
+        return runtimeId.isEmpty() ? Map.of("status", "UP", "version", "0.2.2")
+                : Map.of("status", "UP", "version", "0.2.2", "runtimeId", runtimeId);
     }
 
     @GetMapping("/providers")

@@ -9,9 +9,25 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tiny_http::{Header, Response, Server, StatusCode};
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePortSettings {
+    pub backend_port: u16,
+    pub frontend_port: u16,
+}
+
+impl Default for RuntimePortSettings {
+    fn default() -> Self {
+        Self {
+            backend_port: 18787,
+            frontend_port: 18788,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +35,8 @@ pub struct StartRuntimeRequest {
     pub mode: RuntimeMode,
     pub frontend_broadcast: bool,
     pub advertised_host: String,
+    #[serde(flatten)]
+    pub ports: RuntimePortSettings,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -123,13 +141,16 @@ impl RuntimeManager {
             RuntimeMode::Local => "127.0.0.1",
             RuntimeMode::Service => "0.0.0.0",
         };
-        let backend_port = free_port(backend_bind)?;
+        let backend_port = request.ports.backend_port;
+        ensure_port_available(backend_bind, backend_port, "后端")?;
         let web_port = if matches!(request.mode, RuntimeMode::Service) {
-            Some(free_port(if request.frontend_broadcast {
+            let web_bind = if request.frontend_broadcast {
                 "0.0.0.0"
             } else {
                 "127.0.0.1"
-            })?)
+            };
+            ensure_port_available(web_bind, request.ports.frontend_port, "管理网页")?;
+            Some(request.ports.frontend_port)
         } else {
             None
         };
@@ -153,10 +174,14 @@ impl RuntimeManager {
         let java_display = java.display().to_string();
         let jar_display = jar.display().to_string();
         let log_display = log_path.display().to_string();
+        // A competing server may bind after the port check; readiness must identify our child.
+        let runtime_id = format!("{}-{}", std::process::id(), SystemTime::now()
+            .duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos());
         let mut command = Command::new(&java);
         command
             .args(["-Dfile.encoding=UTF-8", "-jar"])
             .arg(&jar)
+            .arg(format!("--squire.runtime-id={runtime_id}"))
             .env("SQUIRE_PORT", backend_port.to_string())
             .env("SQUIRE_BIND_ADDRESS", backend_bind)
             .env("SQUIRE_DATA_DIR", &data_directory)
@@ -192,6 +217,7 @@ impl RuntimeManager {
             &mut backend,
             backend_bind,
             backend_port,
+            &runtime_id,
             &java_display,
             &jar_display,
             &log_path,
@@ -243,6 +269,13 @@ impl RuntimeManager {
         } else {
             None
         };
+        if let Err(error) = save_port_settings(&data_directory, &request.ports) {
+            if let Some(mut server) = static_server {
+                server.handle.stop();
+            }
+            terminate_child(&mut backend);
+            return Err(error);
+        }
         self.running = Some(RunningRuntime {
             descriptor: descriptor.clone(),
             backend,
@@ -305,13 +338,19 @@ fn runtime_status(state: State<'_, RuntimeState>) -> Result<Option<RuntimeDescri
     manager.status()
 }
 
+#[tauri::command]
+fn runtime_port_settings(app: AppHandle) -> Result<RuntimePortSettings, String> {
+    load_port_settings(&data_directory(&app)?)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(RuntimeState::default())
         .invoke_handler(tauri::generate_handler![
             start_runtime,
             stop_runtime,
-            runtime_status
+            runtime_status,
+            runtime_port_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -325,6 +364,12 @@ pub fn run() {
 }
 
 fn validate_request(request: &StartRuntimeRequest) -> Result<(), String> {
+    validate_ports(&request.ports)?;
+    if matches!(request.mode, RuntimeMode::Service)
+        && request.ports.backend_port == request.ports.frontend_port
+    {
+        return Err("后端端口与管理网页端口不能相同".to_string());
+    }
     let host = request.advertised_host.trim();
     if !valid_advertised_host(host) {
         return Err("公布主机名或 IP 无效".to_string());
@@ -333,6 +378,54 @@ fn validate_request(request: &StartRuntimeRequest) -> Result<(), String> {
         return Err("本地模式不能广播前端".to_string());
     }
     Ok(())
+}
+
+fn validate_ports(settings: &RuntimePortSettings) -> Result<(), String> {
+    if settings.backend_port < 1024 || settings.frontend_port < 1024 {
+        return Err("端口必须是 1024 到 65535 之间的整数".to_string());
+    }
+    Ok(())
+}
+
+fn load_port_settings(directory: &Path) -> Result<RuntimePortSettings, String> {
+    let path = directory.join("desktop-ports.json");
+    let contents = match fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RuntimePortSettings::default());
+        }
+        Err(error) => return Err(format!("读取端口配置失败：{error}\n{}", path.display())),
+    };
+    let settings = serde_json::from_slice(&contents)
+        .map_err(|error| format!("端口配置格式无效：{error}\n{}", path.display()))?;
+    validate_ports(&settings)?;
+    Ok(settings)
+}
+
+fn save_port_settings(directory: &Path, settings: &RuntimePortSettings) -> Result<(), String> {
+    validate_ports(settings)?;
+    let path = directory.join("desktop-ports.json");
+    let temporary = directory.join(format!("desktop-ports.{}.tmp", std::process::id()));
+    let result = (|| -> Result<(), std::io::Error> {
+        fs::create_dir_all(directory)?;
+        let contents = serde_json::to_vec_pretty(settings)?;
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&contents)?;
+        file.sync_all()?;
+        drop(file);
+        // Replace the saved settings only after the new file is fully written.
+        fs::rename(&temporary, &path)
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("保存端口配置失败：{error}\n{}", path.display()));
+    }
+    Ok(())
+}
+
+fn ensure_port_available(bind: &str, port: u16, label: &str) -> Result<(), String> {
+    TcpListener::bind((bind, port)).map(drop)
+        .map_err(|error| format!("{label}端口 {port} 已被占用或无法绑定：{error}"))
 }
 
 fn allowed_origins(request: &StartRuntimeRequest, web_port: u16) -> String {
@@ -377,6 +470,7 @@ fn http_url(host: &str, port: u16) -> String {
     format!("http://{formatted_host}:{port}")
 }
 
+#[cfg(test)]
 fn free_port(bind: &str) -> Result<u16, String> {
     TcpListener::bind((bind, 0))
         .map_err(|error| format!("Find free port on {bind} failed: {error}"))
@@ -392,6 +486,7 @@ fn wait_for_backend(
     child: &mut Child,
     bind: &str,
     port: u16,
+    runtime_id: &str,
     java: &str,
     jar: &str,
     log_path: &Path,
@@ -411,7 +506,7 @@ fn wait_for_backend(
                 log_path,
             ));
         }
-        if health_check(&address) {
+        if health_check(&address, runtime_id) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(250));
@@ -454,7 +549,7 @@ fn read_log_tail(path: &Path, max_bytes: usize) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn health_check(address: &str) -> bool {
+fn health_check(address: &str, runtime_id: &str) -> bool {
     let socket = match address.parse::<SocketAddr>() {
         Ok(address) => address,
         Err(_) => return false,
@@ -466,7 +561,7 @@ fn health_check(address: &str) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     if write!(
         stream,
-        "GET /api/health HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        "GET /api/health HTTP/1.0\r\nHost: {address}\r\nConnection: close\r\n\r\n"
     )
     .is_err()
     {
@@ -476,7 +571,11 @@ fn health_check(address: &str) -> bool {
     if stream.read_to_string(&mut response).is_err() {
         return false;
     }
-    response.starts_with("HTTP/1.1 200") && response.contains("\"status\":\"UP\"")
+    let body = response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("");
+    let health = serde_json::from_str::<serde_json::Value>(body).ok();
+    (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")) && health.is_some_and(|health| {
+        health["status"] == "UP" && health["runtimeId"] == runtime_id
+    })
 }
 
 fn resolve_java(app: &AppHandle) -> Result<PathBuf, String> {
@@ -580,21 +679,21 @@ fn resolve_backend_jar(app: &AppHandle) -> Result<PathBuf, String> {
     }
     if let Ok(resource) = app.path().resource_dir() {
         candidates.push(resource.join("backend.jar"));
-        candidates.push(resource.join("codex-squire-0.2.1.jar"));
+        candidates.push(resource.join("codex-squire-0.2.2.jar"));
         candidates.push(resource.join("resources/backend.jar"));
-        candidates.push(resource.join("resources/codex-squire-0.2.1.jar"));
-        candidates.push(resource.join("backend/build/libs/codex-squire-0.2.1.jar"));
+        candidates.push(resource.join("resources/codex-squire-0.2.2.jar"));
+        candidates.push(resource.join("backend/build/libs/codex-squire-0.2.2.jar"));
         if let Some(package_root) = resource.parent() {
             candidates.push(package_root.join("backend.jar"));
             candidates.push(package_root.join("resources/backend.jar"));
-            candidates.push(package_root.join("resources/codex-squire-0.2.1.jar"));
+            candidates.push(package_root.join("resources/codex-squire-0.2.2.jar"));
         }
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(package_root) = executable.parent() {
             candidates.push(package_root.join("backend.jar"));
             candidates.push(package_root.join("resources/backend.jar"));
-            candidates.push(package_root.join("resources/codex-squire-0.2.1.jar"));
+            candidates.push(package_root.join("resources/codex-squire-0.2.2.jar"));
         }
     }
     candidates.extend(find_workspace_artifacts(
@@ -793,6 +892,90 @@ pub fn main_entry() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
+
+    fn port_test_directory(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("codex-squire-ports-{label}-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()))
+    }
+
+    #[test]
+    fn port_settings_use_fixed_defaults_and_persist_replacements() {
+        let directory = port_test_directory("persist");
+        let defaults = load_port_settings(&directory).unwrap();
+        assert_eq!(defaults.backend_port, 18787);
+        assert_eq!(defaults.frontend_port, 18788);
+        save_port_settings(&directory, &defaults).unwrap();
+        let changed = RuntimePortSettings { backend_port: 19887, frontend_port: 19888 };
+        save_port_settings(&directory, &changed).unwrap();
+        assert_eq!(load_port_settings(&directory).unwrap(), changed);
+        let invalid = RuntimePortSettings { backend_port: 0, frontend_port: 19888 };
+        assert!(save_port_settings(&directory, &invalid).is_err());
+        assert_eq!(load_port_settings(&directory).unwrap(), changed);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn corrupt_port_settings_are_reported_without_silent_defaults() {
+        let directory = port_test_directory("corrupt");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("desktop-ports.json"), "{broken").unwrap();
+        assert!(load_port_settings(&directory).is_err());
+        fs::write(directory.join("desktop-ports.json"), r#"{"backendPort":80,"frontendPort":18788}"#).unwrap();
+        assert!(load_port_settings(&directory).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn runtime_requests_validate_port_ranges_and_service_port_conflicts() {
+        let mut request = StartRuntimeRequest {
+            mode: RuntimeMode::Local, frontend_broadcast: false,
+            advertised_host: "127.0.0.1".to_string(), ports: RuntimePortSettings::default(),
+        };
+        assert!(validate_request(&request).is_ok());
+        request.ports.backend_port = 1023;
+        assert!(validate_request(&request).is_err());
+        request.ports.backend_port = 65535;
+        assert!(validate_request(&request).is_ok());
+        request.mode = RuntimeMode::Service;
+        request.ports.frontend_port = 65535;
+        assert!(validate_request(&request).is_err());
+        assert!(serde_json::from_str::<RuntimePortSettings>(r#"{"backendPort":65536,"frontendPort":18788}"#).is_err());
+    }
+
+    #[test]
+    fn occupied_ports_fail_without_selecting_another_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(ensure_port_available("127.0.0.1", port, "backend").unwrap_err().contains(&port.to_string()));
+        drop(listener);
+        assert!(ensure_port_available("127.0.0.1", port, "backend").is_ok());
+    }
+
+    #[test]
+    fn readiness_rejects_another_runtime_on_the_same_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                {
+                    let mut reader = std::io::BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" { break; }
+                    }
+                }
+                let body = r#"{"status":"UP","runtimeId":"existing-runtime"}"#;
+                write!(stream, "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        assert!(!health_check(&address, "new-runtime"));
+        assert!(health_check(&address, "existing-runtime"));
+        server.join().unwrap();
+    }
 
     #[test]
     fn advertised_hosts_accept_names_and_ip_literals() {
