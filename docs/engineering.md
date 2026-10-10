@@ -118,4 +118,4 @@ Windows 上的 `pnpm --dir frontend test:desktop-auth` 使用真实 release WebV
 
 本轮验证：15 项环境/启动检查、22 项后端测试、Checkstyle、前端构建和 2 项 Playwright E2E 全部通过，CLI 版本为 0.153.4。两个独立脚本从项目目录外调用后成功加载根 `.env`；本机网页/后端实际启动，管理代理、数据目录、无令牌 401、非允许 Origin 403、经网页代理到网关的无效请求 400 均已核验，未发送付费请求。
 
-2026-10-10 本地自动认证开发：`feat/tauri-local-auth` 工作区未提交。49 项后端测试及 Checkstyle、17 项环境/启动检查、14 项 Rust 测试、Rust 格式检查、TypeScript / Vite 构建通过。浏览器原有及新增认证回归共 24 个用例全部通过，包含真实 Codex CLI 与本机模拟上游、冷却清理 401 无未处理拒绝。真实 Windows release 与 development WebView2 均验证本地免输入认证、刷新复用实例、自动凭据不进入存储、令牌读取/校验故障与重试、实际 Provider/Scheme 的 `If-Match` 更新、外部导航拒绝、服务模式拒绝原生凭据、公布地址与本机地址分离、普通 Chrome 的令牌登录和退出回收；development 还检查 Vite HMR 与相同地址的普通浏览器。没有访问真实付费上游或修改 Codex 文件。本机验收不代表跨平台或干净机器安装已完成。
+2026-10-10 本地自动认证开发：实现已提交为 `b18e1ee`，并合入 `main`，纳入 `v0.2.3`。开发阶段的 49 项后端测试及 Checkstyle、17 项环境/启动检查、14 项 Rust 测试、Rust 格式检查、TypeScript / Vite 构建通过。浏览器原有及新增认证回归共 24 个用例全部通过，包含真实 Codex CLI 与本机模拟上游、冷却清理 401 无未处理拒绝。真实 Windows release 与 development WebView2 均验证本地免输入认证、刷新复用实例、自动凭据不进入存储、令牌读取/校验故障与重试、实际 Provider/Scheme 的 `If-Match` 更新、外部导航拒绝、服务模式拒绝原生凭据、公布地址与本机地址分离、普通 Chrome 的令牌登录和退出回收；development 还检查 Vite HMR 与相同地址的普通浏览器。没有访问真实付费上游或修改 Codex 文件。本机验收不代表跨平台或干净机器安装已完成。

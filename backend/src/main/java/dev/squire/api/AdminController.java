@@ -79,8 +79,8 @@ public class AdminController {
 
     @GetMapping("/health")
     public Map<String, String> health() {
-        return runtimeId.isEmpty() ? Map.of("status", "UP", "version", "0.2.2")
-                : Map.of("status", "UP", "version", "0.2.2", "runtimeId", runtimeId);
+        return runtimeId.isEmpty() ? Map.of("status", "UP", "version", "0.2.3")
+                : Map.of("status", "UP", "version", "0.2.3", "runtimeId", runtimeId);
     }
 
     @GetMapping("/providers")

@@ -123,7 +123,7 @@ pnpm tauri:build
 脚本会构建后端 JAR、前端 dist 和 Tauri release exe，使用 Java 17 `jlink` 生成随包 runtime，并固定生成以下目录：
 
 ```text
-Codex-Squire-0.2.2-windows-x64/
+Codex-Squire-0.2.3-windows-x64/
 ├── codex-squire-desktop.exe
 ├── runtime/bin/java.exe
 └── resources/

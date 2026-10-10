@@ -97,7 +97,7 @@ function Workspace({ session, logout }: { session: Extract<WorkspaceSession, { s
   const activePage = navigation.find(item => item.id === page) ?? navigation[0];
   return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#overview" onClick={() => navigate('overview')}><img src="/branding/codex-squire-icon-white.svg" alt="Codex Squire" /><span>Codex Squire</span></a>
     <div className="nav-caption">工作空间</div><nav aria-label="主导航">{navigation.map(item => <button key={item.id} aria-current={activePage.id === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}><item.icon size={18} /><span>{item.name}</span>{activePage.id === item.id && <ChevronRight size={14} className="nav-chevron" />}</button>)}</nav>
-    <div className="sidebar-bottom"><span className="status-dot on" />本地工作空间<span>v0.2.2</span></div></aside>
+    <div className="sidebar-bottom"><span className="status-dot on" />本地工作空间<span>v0.2.3</span></div></aside>
     <div className="main-shell"><header className="topbar"><span className="breadcrumb">工作空间 <ChevronRight size={13} />{activePage.name}</span><div className="topbar-actions"><Badge tone={error ? 'amber' : 'green'}>{error ? '连接异常' : data ? '服务在线' : '连接中'}</Badge><IconButton icon={busy ? LoaderCircle : RefreshCw} label="刷新" disabled={busy} onClick={() => void refresh()} />{session.authSource === 'manual-token' && <IconButton icon={LogOut} label="退出管理" onClick={logout} />}</div></header>
       <main>{error && <ErrorNotice message={error} />}{!data ? <SessionLoading message="正在连接工作空间" /> : <>
         {activePage.id === 'overview' && <Overview {...data} navigate={navigate} />}
@@ -127,5 +127,5 @@ function Login({ onConnect, tokenPath, initialError }: {
   return <div className="login-page"><div className="login-brand"><img src="/branding/codex-squire-icon-white.svg" alt="Codex Squire" /></div>
     <form className="login-form" onSubmit={event => { event.preventDefault(); void connect(); }}><KeyRound size={25} /><h1>连接本地工作空间</h1><label>管理令牌<input autoFocus required disabled={busy} type="password" autoComplete="current-password" value={token} onChange={event => setToken(event.target.value)} /></label>
       <div className="token-path"><span>令牌文件</span><code>{tokenPath || '启动主机数据目录中的 admin.token'}</code></div>{error && <ErrorNotice message={error} />}<button className="button primary" disabled={busy || !token.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Cable size={16} />}连接</button>
-    </form><span className="login-version">LOCAL WORKSPACE / 0.2.2</span></div>;
+    </form><span className="login-version">LOCAL WORKSPACE / 0.2.3</span></div>;
 }
