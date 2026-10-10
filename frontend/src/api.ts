@@ -5,10 +5,18 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
-  constructor(private readonly token: string) {}
+  private readonly baseUrl: string;
+
+  constructor(private readonly token: string, baseUrl?: string) {
+    this.baseUrl = (baseUrl ?? '').replace(/\/$/, '');
+  }
+
+  private endpoint(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
 
   private async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, version?: number): Promise<T> {
-    const response = await fetch(`/api${path}`, {
+    const response = await fetch(this.endpoint(`/api${path}`), {
       method,
       headers: { Authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(version === undefined ? {} : { 'If-Match': `"${version}"` }) },
@@ -43,7 +51,7 @@ export class ApiClient {
   activateScheme = (id: string) => this.request<Scheme>(`/schemes/${id}/activate`, 'POST');
 
   async gatewayResponse(token: string, body: unknown, signal?: AbortSignal): Promise<string> {
-    const response = await fetch('/v1/responses', { method: 'POST', headers: {
+    const response = await fetch(this.endpoint('/v1/responses'), { method: 'POST', headers: {
       Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
     }, body: JSON.stringify(body), signal: signal ?? AbortSignal.timeout(120000) });
     const text = await response.text();

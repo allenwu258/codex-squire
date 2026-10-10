@@ -192,14 +192,31 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .spin { animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .login-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 75px 24px 24px; background: #f4f7fb; }
-.login-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 52px; font-size: 24px; }
-.login-brand img { width: 43px; height: 43px; }
+.login-brand { display: flex; align-items: center; justify-content: center; width: 84px; height: 84px; margin-bottom: 52px; }
+.login-brand img { display: block; width: 84px; height: 84px; }
 .login-form { width: 370px; max-width: 100%; display: flex; flex-direction: column; gap: 23px; }
 .login-form > svg { color: var(--primary); }
 .login-form h1 { font-size: 22px; }
 .login-form .token-path { color: var(--muted); display: flex; flex-direction: column; gap: 5px; font-size: 11px; margin-top: -10px; }
 .login-form .error-notice { margin: 0; }
 .login-version { margin-top: auto; padding-top: 60px; color: #8493a6; font-size: 10px; }
+.launcher-page { min-height: 100vh; width: min(680px, 100%); margin: 0 auto; padding: 72px 28px 36px; display: flex; flex-direction: column; gap: 22px; background: #f4f7fb; }
+.launcher-header { display: flex; align-items: center; gap: 18px; margin-bottom: 12px; }
+.launcher-header img { display: block; width: 72px; height: 72px; flex: 0 0 auto; }
+.launcher-header h1 { margin: 3px 0 5px; }
+.launcher-header p { color: var(--muted); font-size: 13px; }
+.launcher-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.launcher-mode { display: flex; align-items: flex-start; gap: 13px; min-height: 104px; padding: 18px; border: 1px solid var(--border); border-radius: 7px; background: #fff; color: #4f6680; text-align: left; }
+.launcher-mode:hover { border-color: #9fb8d4; background: #fbfdff; }
+.launcher-mode.selected { border-color: #4b7eaf; box-shadow: inset 0 0 0 1px #4b7eaf; background: #f4f8fd; color: var(--primary); }
+.launcher-mode span { display: flex; flex-direction: column; gap: 5px; }
+.launcher-mode strong { font-size: 13px; }
+.launcher-mode small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.launcher-service-options { display: flex; flex-direction: column; gap: 15px; padding: 18px; border: 1px solid #eadcae; border-radius: 7px; background: #fffdf4; }
+.launcher-warning { display: flex; gap: 9px; color: #86661e; font-size: 12px; line-height: 1.6; }
+.launcher-warning svg { flex: 0 0 auto; margin-top: 2px; }
+.launcher-start { align-self: flex-start; min-width: 150px; }
+.launcher-footnote { color: #8392a4; font-size: 11px; }
 @media (min-width: 1550px) { main { padding-top: 40px; } .metrics { padding: 32px 0; } }
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 185px minmax(0, 1fr); }
@@ -263,6 +280,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .code-block { padding-left: 12px; }
   .app-footer { padding: 14px 18px; font-size: 9px; }
   .login-page { padding-top: 50px; }
-  .login-brand { font-size: 22px; }
+  .login-brand { width: 72px; height: 72px; }
+  .login-brand img { width: 72px; height: 72px; }
+  .launcher-page { padding: 42px 18px 28px; }
+  .launcher-header { align-items: flex-start; }
+  .launcher-header img { width: 60px; height: 60px; }
+  .launcher-header h1 { font-size: 21px; }
+  .launcher-modes { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; } }
