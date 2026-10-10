@@ -32,6 +32,11 @@ frontend/playwright-report/
 frontend/blob-report/
 frontend/playwright/.cache/
 frontend/*.tsbuildinfo
+artifacts/
+
+# Tauri build output
+src-tauri/target/
+src-tauri/gen/
 
 # Logs, JVM diagnostics and OS metadata
 *.log
