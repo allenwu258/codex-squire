@@ -146,6 +146,53 @@ test('management workflow, real proxy usage, editing, deletion and responsive vi
   expect(errors).toEqual([]);
 });
 
+test('cross-origin runtime can edit providers and schemes with configuration versions', async ({ page, request }) => {
+  const token = fs.readFileSync(path.join(process.env.SQUIRE_E2E_DATA!, 'admin.token'), 'utf8').trim();
+  const headers = { Authorization: `Bearer ${token}` };
+  const created = await request.post('/api/providers', { headers, data: {
+    name: 'Cross-origin provider', baseUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'mock-api-key',
+    enabled: true, dailyRequestLimit: 0, dailyTokenLimit: 0, maxConcurrency: 2, tokenReservation: 100,
+  } });
+  expect(created.status()).toBe(201);
+  const provider = await created.json();
+  const createdScheme = await request.post('/api/schemes', { headers, data: {
+    name: 'Cross-origin scheme', strategy: 'ORDERED', members: [{ providerId: provider.id, weight: 1 }],
+  } });
+  expect(createdScheme.status()).toBe(201);
+  const scheme = await createdScheme.json();
+
+  await page.addInitScript(() => {
+    window.__SQUIRE_RUNTIME__ = {
+      mode: 'service', backendUrl: 'http://127.0.0.1:8798', gatewayUrl: 'http://127.0.0.1:8798/v1',
+      webUrl: 'http://127.0.0.1:5188', frontendBroadcast: false, adminTokenPath: '',
+    };
+  });
+  await login(page);
+  await page.getByRole('button', { name: '来源管理', exact: true }).click();
+  await page.getByRole('button', { name: '编辑 Cross-origin provider', exact: true }).click();
+  await page.getByLabel('来源名称').fill('Cross-origin provider edited');
+  const providerSave = page.waitForResponse(response =>
+    response.url() === `http://127.0.0.1:8798/api/providers/${provider.id}` && response.request().method() === 'PUT');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const savedProvider = await providerSave;
+  expect(savedProvider.status()).toBe(200);
+  expect(savedProvider.request().headers()['if-match']).toBe('"1"');
+  expect(await savedProvider.json()).toMatchObject({ name: 'Cross-origin provider edited', version: 2 });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '配置方案', exact: true }).click();
+  await page.getByRole('button', { name: '编辑 Cross-origin scheme', exact: true }).click();
+  await page.getByLabel('方案名称').fill('Cross-origin scheme edited');
+  const schemeSave = page.waitForResponse(response =>
+    response.url() === `http://127.0.0.1:8798/api/schemes/${scheme.id}` && response.request().method() === 'PUT');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  const savedScheme = await schemeSave;
+  expect(savedScheme.status()).toBe(200);
+  expect(savedScheme.request().headers()['if-match']).toBe('"1"');
+  expect(await savedScheme.json()).toMatchObject({ name: 'Cross-origin scheme edited', version: 2 });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
 test('quota editor cannot overwrite rules before a successful load', async ({ page, request }) => {
   await login(page);
   const token = fs.readFileSync(path.join(process.env.SQUIRE_E2E_DATA!, 'admin.token'), 'utf8').trim();

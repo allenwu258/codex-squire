@@ -1,6 +1,6 @@
 [package]
 name = "codex-squire-desktop"
-version = "0.1.0"
+version = "0.2.1"
 description = "Codex Squire desktop runtime"
 authors = ["Codex Squire contributors"]
 edition = "2021"

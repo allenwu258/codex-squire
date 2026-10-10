@@ -468,6 +468,18 @@ class GatewayIntegrationTest {
     }
 
     @Test
+    void allowsIfMatchInCrossOriginConfigurationPreflight() {
+        admin.options().uri("/api/providers/test")
+                .header(HttpHeaders.ORIGIN, "http://127.0.0.1:5173")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT")
+                .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,content-type,if-match")
+                .exchange().expectStatus().isNoContent()
+                .expectHeader().valueEquals(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "http://127.0.0.1:5173")
+                .expectHeader().value("Access-Control-Allow-Headers",
+                        value -> assertThat(value.toLowerCase(java.util.Locale.ROOT)).contains("if-match"));
+    }
+
+    @Test
     void preservesKeyOnUpdateAndProtectsSchemeReferences() {
         String id = provider("a", 0, 0, 4);
         admin.get().uri("/api/providers").exchange().expectBody(String.class)

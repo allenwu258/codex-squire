@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.2.1',
     [string]$JdkHome = '',
     [string]$OutputDirectory = ''
 )
@@ -48,7 +48,7 @@ $jdk = Resolve-JdkHome -RequestedHome $JdkHome
 $env:JAVA_HOME = $jdk
 $env:PATH = "$(Join-Path $jdk 'bin');$env:PATH"
 
-$jar = Join-Path $root 'backend/build/libs/codex-squire-0.1.0.jar'
+$jar = Join-Path $root "backend/build/libs/codex-squire-$Version.jar"
 $dist = Join-Path $root 'frontend/dist'
 $tauriExe = Join-Path $root 'src-tauri/target/release/codex-squire-desktop.exe'
 $outputRoot = if ($OutputDirectory) {

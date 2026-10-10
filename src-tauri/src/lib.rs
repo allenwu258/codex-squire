@@ -580,21 +580,21 @@ fn resolve_backend_jar(app: &AppHandle) -> Result<PathBuf, String> {
     }
     if let Ok(resource) = app.path().resource_dir() {
         candidates.push(resource.join("backend.jar"));
-        candidates.push(resource.join("codex-squire-0.1.0.jar"));
+        candidates.push(resource.join("codex-squire-0.2.1.jar"));
         candidates.push(resource.join("resources/backend.jar"));
-        candidates.push(resource.join("resources/codex-squire-0.1.0.jar"));
-        candidates.push(resource.join("backend/build/libs/codex-squire-0.1.0.jar"));
+        candidates.push(resource.join("resources/codex-squire-0.2.1.jar"));
+        candidates.push(resource.join("backend/build/libs/codex-squire-0.2.1.jar"));
         if let Some(package_root) = resource.parent() {
             candidates.push(package_root.join("backend.jar"));
             candidates.push(package_root.join("resources/backend.jar"));
-            candidates.push(package_root.join("resources/codex-squire-0.1.0.jar"));
+            candidates.push(package_root.join("resources/codex-squire-0.2.1.jar"));
         }
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(package_root) = executable.parent() {
             candidates.push(package_root.join("backend.jar"));
             candidates.push(package_root.join("resources/backend.jar"));
-            candidates.push(package_root.join("resources/codex-squire-0.1.0.jar"));
+            candidates.push(package_root.join("resources/codex-squire-0.2.1.jar"));
         }
     }
     candidates.extend(find_workspace_artifacts(

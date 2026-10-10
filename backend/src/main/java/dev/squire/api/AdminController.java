@@ -76,7 +76,7 @@ public class AdminController {
 
     @GetMapping("/health")
     public Map<String, String> health() {
-        return Map.of("status", "UP", "version", "0.1.0");
+        return Map.of("status", "UP", "version", "0.2.1");
     }
 
     @GetMapping("/providers")

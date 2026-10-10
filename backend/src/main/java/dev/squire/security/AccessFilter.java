@@ -47,7 +47,8 @@ public final class AccessFilter implements WebFilter {
             headers.setAccessControlAllowOrigin(origin);
             headers.add(HttpHeaders.VARY, HttpHeaders.ORIGIN);
             headers.setAccessControlAllowMethods(java.util.List.of(HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT, HttpMethod.DELETE));
-            headers.setAccessControlAllowHeaders(java.util.List.of("Authorization", "Content-Type"));
+            // Cross-origin editors send If-Match for configuration version checks.
+            headers.setAccessControlAllowHeaders(java.util.List.of("Authorization", "Content-Type", "If-Match"));
         }
         if (exchange.getRequest().getMethod() == HttpMethod.OPTIONS && origin != null) {
             exchange.getResponse().setStatusCode(HttpStatus.NO_CONTENT);
