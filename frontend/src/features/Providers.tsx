@@ -20,10 +20,19 @@ export function Providers({ api, providers, runtime, statistics, refresh }: Prop
   const [deleting, setDeleting] = useState<Provider | null>(null);
   const [quotaProvider, setQuotaProvider] = useState<Provider | null>(null);
   const [probeProvider, setProbeProvider] = useState<Provider | null>(null);
+  const [clearing, setClearing] = useState('');
+  const [error, setError] = useState('');
+  async function clearCooldown(provider: Provider) {
+    setClearing(provider.id); setError('');
+    try { await api.clearCooldown(provider.id); await refresh(); }
+    catch (failure) { setError(errorMessage(failure)); }
+    finally { setClearing(''); }
+  }
   const visible = providers.filter(provider => `${provider.name} ${provider.baseUrl}`.toLowerCase().includes(query.toLowerCase()));
   return <>
     <div className="page-title"><div><div className="eyebrow">PROVIDERS</div><h1>来源管理 <span>{providers.length}</span></h1></div>
       <button className="button primary" onClick={() => setEditing('new')}><Plus size={17} />添加来源</button></div>
+    {error && <ErrorNotice message={error} />}
     <div className="toolbar"><div className="search"><Search size={17} /><input aria-label="搜索来源" placeholder="搜索名称或地址" value={query} onChange={event => setQuery(event.target.value)} /></div><span className="muted">Base URL + API Key</span></div>
     {visible.length === 0 ? <Empty icon={Server} title={providers.length ? '没有匹配的来源' : '暂无 Provider'} action={!providers.length && <button className="button" onClick={() => setEditing('new')}><Plus size={16} />添加来源</button>} /> :
       <div className="table-wrap"><table><thead><tr><th>来源</th><th>状态</th><th>今日请求 / 限额</th><th>今日占额 / Token 限额</th><th>并发</th><th className="right">操作</th></tr></thead>
@@ -35,7 +44,7 @@ export function Providers({ api, providers, runtime, statistics, refresh }: Prop
           return <tr key={provider.id}><td><strong>{provider.name}</strong><small className="mono url">{provider.baseUrl}</small></td>
             <td><div><Badge tone={provider.enabled ? 'green' : ''}>{provider.enabled ? '已启用' : '已停用'}</Badge>
               <Badge tone={health === 'READY' ? 'green' : health === 'UNKNOWN' ? '' : 'amber'}>{healthLabels[health] ?? health}</Badge>
-              {state?.cooldownUntil && <IconButton icon={RotateCcw} label={`清除 ${provider.name} 冷却`} onClick={() => void api.clearCooldown(provider.id).then(refresh)} />}</div></td>
+              {state?.cooldownUntil && <IconButton icon={RotateCcw} label={`清除 ${provider.name} 冷却`} disabled={!!clearing} onClick={() => void clearCooldown(provider)} />}</div></td>
             <td className="numeric">{number(usage?.requests ?? 0)} <span className="muted">/ {provider.dailyRequestLimit ? number(provider.dailyRequestLimit) : '不限'}</span></td>
             <td><div className="numeric">{number(charged)} <span className="muted">/ {provider.dailyTokenLimit ? number(provider.dailyTokenLimit) : '不限'}</span></div>
               {provider.dailyTokenLimit > 0 && <progress aria-label={`${provider.name} Token 占额`} max={provider.dailyTokenLimit} value={charged} />}</td>

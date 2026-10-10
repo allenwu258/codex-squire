@@ -10,8 +10,14 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{AppHandle, Manager, RunEvent, State, Webview, WebviewWindowBuilder};
 use tiny_http::{Header, Response, Server, StatusCode};
+
+mod local_auth;
+use local_auth::{
+    authorize_caller, development_url, read_admin_token, trusted_page, NativeAdminSession,
+    NativeAuthError,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +55,7 @@ pub enum RuntimeMode {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDescriptor {
+    pub runtime_id: String,
     pub mode: RuntimeMode,
     pub backend_url: String,
     pub gateway_url: String,
@@ -68,6 +75,7 @@ struct RuntimeManager {
 
 struct RunningRuntime {
     descriptor: RuntimeDescriptor,
+    data_directory: PathBuf,
     backend: Child,
     static_server: Option<StaticServerHandle>,
 }
@@ -75,6 +83,7 @@ struct RunningRuntime {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WebRuntimeDescriptor {
+    runtime_id: String,
     mode: RuntimeMode,
     backend_url: String,
     gateway_url: String,
@@ -82,11 +91,12 @@ struct WebRuntimeDescriptor {
     frontend_broadcast: bool,
 }
 
-impl From<&RuntimeDescriptor> for WebRuntimeDescriptor {
-    fn from(runtime: &RuntimeDescriptor) -> Self {
+impl WebRuntimeDescriptor {
+    fn new(runtime: &RuntimeDescriptor, advertised_backend_url: &str) -> Self {
         Self {
+            runtime_id: runtime.runtime_id.clone(),
             mode: runtime.mode,
-            backend_url: runtime.backend_url.clone(),
+            backend_url: advertised_backend_url.to_string(),
             gateway_url: runtime.gateway_url.clone(),
             web_url: runtime.web_url.clone(),
             frontend_broadcast: runtime.frontend_broadcast,
@@ -157,10 +167,13 @@ impl RuntimeManager {
         let backend_host = if matches!(request.mode, RuntimeMode::Local) {
             "127.0.0.1".to_string()
         } else {
-            request.advertised_host.clone()
+            request.advertised_host.trim().to_string()
         };
         let backend_url = http_url(&backend_host, backend_port);
-        let data_directory = normalize_process_path(data_directory(app)?);
+        let data_directory = normalize_process_path(
+            std::path::absolute(data_directory(app)?)
+                .map_err(|error| format!("Resolve data directory failed: {error}"))?,
+        );
         fs::create_dir_all(&data_directory)
             .map_err(|error| format!("Create data directory failed: {error}"))?;
         let jar = normalize_process_path(resolve_backend_jar(app)?);
@@ -175,8 +188,14 @@ impl RuntimeManager {
         let jar_display = jar.display().to_string();
         let log_display = log_path.display().to_string();
         // A competing server may bind after the port check; readiness must identify our child.
-        let runtime_id = format!("{}-{}", std::process::id(), SystemTime::now()
-            .duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos());
+        let runtime_id = format!(
+            "{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos()
+        );
         let mut command = Command::new(&java);
         command
             .args(["-Dfile.encoding=UTF-8", "-jar"])
@@ -188,7 +207,11 @@ impl RuntimeManager {
             .env("SQUIRE_PUBLIC_BASE_URL", &backend_url)
             .env(
                 "SQUIRE_ALLOWED_ORIGINS",
-                allowed_origins(&request, web_port.unwrap_or(0)),
+                allowed_origins(
+                    &request,
+                    web_port.unwrap_or(0),
+                    development_url(app).as_ref(),
+                ),
             );
         // `java.exe` is a console subsystem executable on Windows. A release
         // desktop app must never open a second console window while starting
@@ -238,8 +261,9 @@ impl RuntimeManager {
             http_url(web_host, actual_web_port)
         };
         let descriptor = RuntimeDescriptor {
+            runtime_id,
             mode: request.mode,
-            backend_url: backend_url.clone(),
+            backend_url: http_url("127.0.0.1", backend_port),
             gateway_url: format!("{backend_url}/v1"),
             web_url,
             frontend_broadcast: request.frontend_broadcast,
@@ -259,7 +283,12 @@ impl RuntimeManager {
                     return Err(error);
                 }
             };
-            match start_static_server(root, web_bind, web_port, &descriptor) {
+            match start_static_server(
+                root,
+                web_bind,
+                web_port,
+                WebRuntimeDescriptor::new(&descriptor, &backend_url),
+            ) {
                 Ok(server) => Some(server),
                 Err(error) => {
                     terminate_child(&mut backend);
@@ -278,6 +307,7 @@ impl RuntimeManager {
         }
         self.running = Some(RunningRuntime {
             descriptor: descriptor.clone(),
+            data_directory,
             backend,
             static_server: static_server.map(|server| server.handle),
         });
@@ -309,14 +339,55 @@ impl RuntimeManager {
         }
         Ok(None)
     }
+
+    fn local_admin_session(
+        &mut self,
+        expected_runtime_id: &str,
+    ) -> Result<NativeAdminSession, NativeAuthError> {
+        let not_running =
+            || NativeAuthError::new("RUNTIME_NOT_RUNNING", "桌面后端已停止，请重新启动运行时。");
+        self.status()
+            .map_err(|_| not_running())?
+            .ok_or_else(not_running)?;
+        let runtime = self.running.as_mut().ok_or_else(not_running)?;
+        if runtime.descriptor.runtime_id != expected_runtime_id {
+            return Err(NativeAuthError::new(
+                "RUNTIME_CHANGED",
+                "桌面运行实例已改变，请重新读取运行时。",
+            ));
+        }
+        if runtime.descriptor.mode != RuntimeMode::Local {
+            return Err(NativeAuthError::new(
+                "LOCAL_AUTH_UNAVAILABLE",
+                "服务模式需要使用管理令牌登录。",
+            ));
+        }
+        let admin_token = read_admin_token(&runtime.data_directory)?;
+        if runtime
+            .backend
+            .try_wait()
+            .map_err(|_| not_running())?
+            .is_some()
+        {
+            self.stop().map_err(|_| not_running())?;
+            return Err(not_running());
+        }
+        Ok(NativeAdminSession {
+            runtime_id: runtime.descriptor.runtime_id.clone(),
+            backend_url: runtime.descriptor.backend_url.clone(),
+            admin_token,
+        })
+    }
 }
 
 #[tauri::command]
 fn start_runtime(
     app: AppHandle,
+    webview: Webview,
     state: State<'_, RuntimeState>,
     request: StartRuntimeRequest,
 ) -> Result<RuntimeDescriptor, String> {
+    authorize_caller(&app, &webview).map_err(|error| error.message.to_string())?;
     let mut manager = state
         .manager
         .lock()
@@ -325,12 +396,22 @@ fn start_runtime(
 }
 
 #[tauri::command]
-fn stop_runtime(state: State<'_, RuntimeState>) -> Result<(), String> {
+fn stop_runtime(
+    app: AppHandle,
+    webview: Webview,
+    state: State<'_, RuntimeState>,
+) -> Result<(), String> {
+    authorize_caller(&app, &webview).map_err(|error| error.message.to_string())?;
     state.stop()
 }
 
 #[tauri::command]
-fn runtime_status(state: State<'_, RuntimeState>) -> Result<Option<RuntimeDescriptor>, String> {
+fn runtime_status(
+    app: AppHandle,
+    webview: Webview,
+    state: State<'_, RuntimeState>,
+) -> Result<Option<RuntimeDescriptor>, String> {
+    authorize_caller(&app, &webview).map_err(|error| error.message.to_string())?;
     let mut manager = state
         .manager
         .lock()
@@ -339,18 +420,49 @@ fn runtime_status(state: State<'_, RuntimeState>) -> Result<Option<RuntimeDescri
 }
 
 #[tauri::command]
-fn runtime_port_settings(app: AppHandle) -> Result<RuntimePortSettings, String> {
+fn runtime_port_settings(app: AppHandle, webview: Webview) -> Result<RuntimePortSettings, String> {
+    authorize_caller(&app, &webview).map_err(|error| error.message.to_string())?;
     load_port_settings(&data_directory(&app)?)
+}
+
+#[tauri::command]
+fn get_local_admin_session(
+    app: AppHandle,
+    webview: Webview,
+    state: State<'_, RuntimeState>,
+    expected_runtime_id: String,
+) -> Result<NativeAdminSession, NativeAuthError> {
+    authorize_caller(&app, &webview)?;
+    let mut manager = state
+        .manager
+        .lock()
+        .map_err(|_| NativeAuthError::new("RUNTIME_NOT_RUNNING", "无法读取桌面运行时状态。"))?;
+    manager.local_admin_session(&expected_runtime_id)
 }
 
 pub fn run() {
     tauri::Builder::default()
         .manage(RuntimeState::default())
+        .setup(|app| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .ok_or("main window configuration is missing")?;
+            let dev_url = development_url(app.handle());
+            WebviewWindowBuilder::from_config(app, config)?
+                .on_navigation(move |url| trusted_page(url, dev_url.as_ref()))
+                .build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_runtime,
             stop_runtime,
             runtime_status,
-            runtime_port_settings
+            runtime_port_settings,
+            get_local_admin_session
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -404,17 +516,32 @@ fn load_port_settings(directory: &Path) -> Result<RuntimePortSettings, String> {
 
 fn save_port_settings(directory: &Path, settings: &RuntimePortSettings) -> Result<(), String> {
     validate_ports(settings)?;
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("创建端口配置目录失败：{error}\n{}", directory.display()))?;
     let path = directory.join("desktop-ports.json");
-    let temporary = directory.join(format!("desktop-ports.{}.tmp", std::process::id()));
+    if let Ok(contents) = fs::read(&path) {
+        if let Ok(existing) = serde_json::from_slice::<RuntimePortSettings>(&contents) {
+            if existing == *settings {
+                return Ok(());
+            }
+        }
+    }
+    let temporary = directory.join(format!(
+        "desktop-ports.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos()
+    ));
     let result = (|| -> Result<(), std::io::Error> {
-        fs::create_dir_all(directory)?;
         let contents = serde_json::to_vec_pretty(settings)?;
         let mut file = fs::File::create(&temporary)?;
         file.write_all(&contents)?;
         file.sync_all()?;
         drop(file);
         // Replace the saved settings only after the new file is fully written.
-        fs::rename(&temporary, &path)
+        replace_file(&temporary, &path)
     })();
     if let Err(error) = result {
         let _ = fs::remove_file(&temporary);
@@ -423,18 +550,62 @@ fn save_port_settings(directory: &Path, settings: &RuntimePortSettings) -> Resul
     Ok(())
 }
 
+#[cfg(windows)]
+fn replace_file(temporary: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(temporary, target)
+}
+
 fn ensure_port_available(bind: &str, port: u16, label: &str) -> Result<(), String> {
-    TcpListener::bind((bind, port)).map(drop)
+    TcpListener::bind((bind, port))
+        .map(drop)
         .map_err(|error| format!("{label}端口 {port} 已被占用或无法绑定：{error}"))
 }
 
-fn allowed_origins(request: &StartRuntimeRequest, web_port: u16) -> String {
+fn allowed_origins(
+    request: &StartRuntimeRequest,
+    web_port: u16,
+    dev_url: Option<&tauri::Url>,
+) -> String {
     if matches!(request.mode, RuntimeMode::Service) && request.frontend_broadcast {
         "*".to_string()
-    } else if matches!(request.mode, RuntimeMode::Local) {
-        "tauri://localhost,http://tauri.localhost".to_string()
     } else {
-        format!("tauri://localhost,http://tauri.localhost,http://127.0.0.1:{web_port},http://localhost:{web_port}")
+        let mut origins = vec![
+            "tauri://localhost".to_string(),
+            "http://tauri.localhost".to_string(),
+        ];
+        if matches!(request.mode, RuntimeMode::Service) {
+            origins.extend([
+                format!("http://127.0.0.1:{web_port}"),
+                format!("http://localhost:{web_port}"),
+            ]);
+        }
+        if let Some(url) = dev_url {
+            origins.push(url.origin().ascii_serialization());
+        }
+        origins.join(",")
     }
 }
 
@@ -571,11 +742,14 @@ fn health_check(address: &str, runtime_id: &str) -> bool {
     if stream.read_to_string(&mut response).is_err() {
         return false;
     }
-    let body = response.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("");
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("");
     let health = serde_json::from_str::<serde_json::Value>(body).ok();
-    (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")) && health.is_some_and(|health| {
-        health["status"] == "UP" && health["runtimeId"] == runtime_id
-    })
+    (response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
+        && health
+            .is_some_and(|health| health["status"] == "UP" && health["runtimeId"] == runtime_id)
 }
 
 fn resolve_java(app: &AppHandle) -> Result<PathBuf, String> {
@@ -762,12 +936,12 @@ fn start_static_server(
     root: PathBuf,
     bind: &str,
     port: u16,
-    runtime: &RuntimeDescriptor,
+    runtime: WebRuntimeDescriptor,
 ) -> Result<StartedStaticServer, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("Resolve frontend root failed: {error}"))?;
-    let runtime_json = serde_json::to_vec(&WebRuntimeDescriptor::from(runtime))
+    let runtime_json = serde_json::to_vec(&runtime)
         .map_err(|error| format!("Serialize web runtime descriptor failed: {error}"))?;
     let address = format!("{bind}:{port}");
     let server =
@@ -892,11 +1066,121 @@ pub fn main_entry() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_session_is_bound_to_live_local_instance_and_internal_directory() {
+        let root = std::env::temp_dir().join(format!("squire-live-session-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("admin.token"), "internal-test-credential").unwrap();
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/C", "ping -n 61 127.0.0.1"]);
+            command
+        } else {
+            let mut command = Command::new("sleep");
+            command.arg("60");
+            command
+        };
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut manager = RuntimeManager {
+            running: Some(RunningRuntime {
+                descriptor: RuntimeDescriptor {
+                    runtime_id: "owned-instance".to_string(),
+                    mode: RuntimeMode::Local,
+                    backend_url: "http://127.0.0.1:18787".to_string(),
+                    gateway_url: "http://127.0.0.1:18787/v1".to_string(),
+                    web_url: "http://tauri.localhost".to_string(),
+                    frontend_broadcast: false,
+                    admin_token_path: "ignored/frontend/path/admin.token".to_string(),
+                },
+                data_directory: root.clone(),
+                backend: child,
+                static_server: None,
+            }),
+        };
+        let session = manager.local_admin_session("owned-instance").ok().unwrap();
+        assert_eq!(session.admin_token, "internal-test-credential");
+        assert_eq!(session.runtime_id, "owned-instance");
+        assert_eq!(session.backend_url, "http://127.0.0.1:18787");
+        assert_eq!(
+            manager.status().unwrap().unwrap().runtime_id,
+            "owned-instance"
+        );
+        assert_eq!(
+            manager
+                .local_admin_session("old-instance")
+                .err()
+                .unwrap()
+                .code,
+            "RUNTIME_CHANGED"
+        );
+        manager.running.as_mut().unwrap().descriptor.mode = RuntimeMode::Service;
+        assert_eq!(
+            manager
+                .local_admin_session("owned-instance")
+                .err()
+                .unwrap()
+                .code,
+            "LOCAL_AUTH_UNAVAILABLE"
+        );
+        manager.running.as_mut().unwrap().descriptor.mode = RuntimeMode::Local;
+        terminate_child(&mut manager.running.as_mut().unwrap().backend);
+        assert_eq!(
+            manager
+                .local_admin_session("owned-instance")
+                .err()
+                .unwrap()
+                .code,
+            "RUNTIME_NOT_RUNNING"
+        );
+        assert!(manager.running.is_none());
+        assert_eq!(
+            manager
+                .local_admin_session("owned-instance")
+                .err()
+                .unwrap()
+                .code,
+            "RUNTIME_NOT_RUNNING"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn development_origin_is_added_exactly_without_granting_all_origins() {
+        let request = StartRuntimeRequest {
+            mode: RuntimeMode::Local,
+            frontend_broadcast: false,
+            advertised_host: "127.0.0.1".to_string(),
+            ports: RuntimePortSettings::default(),
+        };
+        let development = tauri::Url::parse("http://127.0.0.1:5173/frontend").unwrap();
+        let origins = allowed_origins(&request, 0, Some(&development));
+        assert_eq!(
+            origins,
+            "tauri://localhost,http://tauri.localhost,http://127.0.0.1:5173"
+        );
+        assert!(!allowed_origins(&request, 0, None).contains("5173"));
+    }
     use std::io::BufRead;
 
     fn port_test_directory(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("codex-squire-ports-{label}-{}-{}", std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()))
+        std::env::temp_dir().join(format!(
+            "codex-squire-ports-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     #[test]
@@ -906,12 +1190,40 @@ mod tests {
         assert_eq!(defaults.backend_port, 18787);
         assert_eq!(defaults.frontend_port, 18788);
         save_port_settings(&directory, &defaults).unwrap();
-        let changed = RuntimePortSettings { backend_port: 19887, frontend_port: 19888 };
+        let changed = RuntimePortSettings {
+            backend_port: 19887,
+            frontend_port: 19888,
+        };
         save_port_settings(&directory, &changed).unwrap();
         assert_eq!(load_port_settings(&directory).unwrap(), changed);
-        let invalid = RuntimePortSettings { backend_port: 0, frontend_port: 19888 };
+        let invalid = RuntimePortSettings {
+            backend_port: 0,
+            frontend_port: 19888,
+        };
         assert!(save_port_settings(&directory, &invalid).is_err());
         assert_eq!(load_port_settings(&directory).unwrap(), changed);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unchanged_port_settings_do_not_rewrite_the_existing_file() {
+        let directory = port_test_directory("unchanged");
+        let settings = RuntimePortSettings::default();
+        save_port_settings(&directory, &settings).unwrap();
+        let path = directory.join("desktop-ports.json");
+        let before = fs::read(&path).unwrap();
+        if cfg!(windows) {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+        save_port_settings(&directory, &settings).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        if cfg!(windows) {
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -921,7 +1233,11 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("desktop-ports.json"), "{broken").unwrap();
         assert!(load_port_settings(&directory).is_err());
-        fs::write(directory.join("desktop-ports.json"), r#"{"backendPort":80,"frontendPort":18788}"#).unwrap();
+        fs::write(
+            directory.join("desktop-ports.json"),
+            r#"{"backendPort":80,"frontendPort":18788}"#,
+        )
+        .unwrap();
         assert!(load_port_settings(&directory).is_err());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -929,8 +1245,10 @@ mod tests {
     #[test]
     fn runtime_requests_validate_port_ranges_and_service_port_conflicts() {
         let mut request = StartRuntimeRequest {
-            mode: RuntimeMode::Local, frontend_broadcast: false,
-            advertised_host: "127.0.0.1".to_string(), ports: RuntimePortSettings::default(),
+            mode: RuntimeMode::Local,
+            frontend_broadcast: false,
+            advertised_host: "127.0.0.1".to_string(),
+            ports: RuntimePortSettings::default(),
         };
         assert!(validate_request(&request).is_ok());
         request.ports.backend_port = 1023;
@@ -940,14 +1258,19 @@ mod tests {
         request.mode = RuntimeMode::Service;
         request.ports.frontend_port = 65535;
         assert!(validate_request(&request).is_err());
-        assert!(serde_json::from_str::<RuntimePortSettings>(r#"{"backendPort":65536,"frontendPort":18788}"#).is_err());
+        assert!(serde_json::from_str::<RuntimePortSettings>(
+            r#"{"backendPort":65536,"frontendPort":18788}"#
+        )
+        .is_err());
     }
 
     #[test]
     fn occupied_ports_fail_without_selecting_another_port() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        assert!(ensure_port_available("127.0.0.1", port, "backend").unwrap_err().contains(&port.to_string()));
+        assert!(ensure_port_available("127.0.0.1", port, "backend")
+            .unwrap_err()
+            .contains(&port.to_string()));
         drop(listener);
         assert!(ensure_port_available("127.0.0.1", port, "backend").is_ok());
     }
@@ -965,11 +1288,18 @@ mod tests {
                     loop {
                         line.clear();
                         reader.read_line(&mut line).unwrap();
-                        if line == "\r\n" { break; }
+                        if line == "\r\n" {
+                            break;
+                        }
                     }
                 }
                 let body = r#"{"status":"UP","runtimeId":"existing-runtime"}"#;
-                write!(stream, "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
             }
         });
         assert!(!health_check(&address, "new-runtime"));
@@ -1021,19 +1351,28 @@ mod tests {
         fs::create_dir_all(&root).expect("create static test root");
         fs::write(root.join("index.html"), "<html>desktop</html>").expect("write static test file");
         let descriptor = RuntimeDescriptor {
+            runtime_id: "static-test".to_string(),
             mode: RuntimeMode::Service,
-            backend_url: "http://192.168.1.20:4000".to_string(),
+            backend_url: "http://127.0.0.1:4000".to_string(),
             gateway_url: "http://192.168.1.20:4000/v1".to_string(),
             web_url: "http://192.168.1.20:4001".to_string(),
             frontend_broadcast: true,
             admin_token_path: "C:/private/admin.token".to_string(),
         };
         let port = free_port("127.0.0.1").expect("reserve static test port");
-        let mut server = start_static_server(root.clone(), "127.0.0.1", port, &descriptor)
-            .expect("start static test server");
+        let mut server = start_static_server(
+            root.clone(),
+            "127.0.0.1",
+            port,
+            WebRuntimeDescriptor::new(&descriptor, "http://192.168.1.20:4000"),
+        )
+        .expect("start static test server");
         let runtime_response = http_get("127.0.0.1", port, "/__squire/runtime.json");
         assert!(runtime_response.contains("http://192.168.1.20:4000"));
         assert!(!runtime_response.contains("admin.token"));
+        assert!(!runtime_response.contains("adminToken"));
+        assert!(!runtime_response.contains("C:/private"));
+        assert!(!runtime_response.contains("http://127.0.0.1:4000"));
         let page_response = http_get("127.0.0.1", port, "/dashboard");
         assert!(page_response.contains("<html>desktop</html>"));
         server.handle.stop();

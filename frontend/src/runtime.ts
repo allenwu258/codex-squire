@@ -1,6 +1,7 @@
 export type RuntimeMode = 'local' | 'service';
 
 export interface ClientRuntime {
+  runtimeId?: string;
   mode: RuntimeMode;
   backendUrl: string;
   gatewayUrl: string;
@@ -9,10 +10,25 @@ export interface ClientRuntime {
   adminTokenPath: string;
 }
 
+export interface DesktopRuntime extends ClientRuntime {
+  runtimeId: string;
+}
+
+export interface NativeAdminSession {
+  runtimeId: string;
+  backendUrl: string;
+  adminToken: string;
+}
+
 export interface RuntimePortSettings {
   backendPort: number;
   frontendPort: number;
 }
+
+export const DEFAULT_RUNTIME_PORT_SETTINGS: RuntimePortSettings = {
+  backendPort: 18787,
+  frontendPort: 18788,
+};
 
 export interface StartRuntimeRequest extends RuntimePortSettings {
   mode: RuntimeMode;
@@ -34,30 +50,58 @@ export function isDesktopApp(): boolean {
 }
 
 export function initialRuntime(): ClientRuntime | null {
-  return typeof window === 'undefined' ? null : window.__SQUIRE_RUNTIME__ ?? null;
+  return typeof window === 'undefined' ? null : parseWebRuntime(window.__SQUIRE_RUNTIME__);
+}
+
+function httpUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return null;
+    return url.href.replace(/\/$/, '');
+  } catch { return null; }
+}
+
+export function parseWebRuntime(value: unknown): ClientRuntime | null {
+  if (!value || typeof value !== 'object') return null;
+  const fields = value as Record<string, unknown>;
+  const backendUrl = httpUrl(fields.backendUrl);
+  const gatewayUrl = httpUrl(fields.gatewayUrl);
+  const webUrl = httpUrl(fields.webUrl);
+  if (!backendUrl || !gatewayUrl || !webUrl || (fields.mode !== 'local' && fields.mode !== 'service')
+    || typeof fields.frontendBroadcast !== 'boolean') return null;
+  // Public configuration can describe an endpoint, never an authentication policy or credential.
+  return { mode: fields.mode as RuntimeMode, backendUrl, gatewayUrl, webUrl,
+    frontendBroadcast: fields.frontendBroadcast, adminTokenPath: '',
+    runtimeId: typeof fields.runtimeId === 'string' ? fields.runtimeId : undefined };
+}
+
+function parseDesktopRuntime(value: unknown): DesktopRuntime {
+  const runtime = parseWebRuntime(value);
+  if (!runtime?.runtimeId || new URL(runtime.backendUrl).hostname !== '127.0.0.1'
+    || new URL(runtime.backendUrl).protocol !== 'http:' || new URL(runtime.backendUrl).pathname !== '/') {
+    throw new Error('桌面运行时返回了无效的实例或后端地址。');
+  }
+  const fields = value as Record<string, unknown>;
+  return { ...runtime, runtimeId: runtime.runtimeId, adminTokenPath: typeof fields.adminTokenPath === 'string' ? fields.adminTokenPath : '' };
 }
 
 export async function discoverWebRuntime(): Promise<ClientRuntime | null> {
   if (isDesktopApp()) return initialRuntime();
   try {
-    const response = await fetch('/__squire/runtime.json', { cache: 'no-store' });
+    const response = await fetch('/__squire/runtime.json', { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000) });
     if (!response.ok) return null;
-    const runtime = await response.json() as Partial<ClientRuntime>;
-    if (!runtime.backendUrl || !runtime.gatewayUrl || !runtime.mode || !runtime.webUrl) return null;
-    return { ...runtime, adminTokenPath: runtime.adminTokenPath ?? '' } as ClientRuntime;
+    return parseWebRuntime(await response.json());
   } catch {
     return null;
   }
 }
 
-export async function startDesktopRuntime(request: StartRuntimeRequest): Promise<ClientRuntime> {
+export async function startDesktopRuntime(request: StartRuntimeRequest): Promise<DesktopRuntime> {
   if (!isDesktopApp()) {
     throw new Error('Tauri runtime is unavailable');
   }
-  const result = await invokeTauri<ClientRuntime>('start_runtime', { request });
-  const runtime = result as ClientRuntime;
-  window.__SQUIRE_RUNTIME__ = runtime;
-  return runtime;
+  return parseDesktopRuntime(await invokeTauri('start_runtime', { request }));
 }
 
 export async function stopDesktopRuntime(): Promise<void> {
@@ -65,9 +109,19 @@ export async function stopDesktopRuntime(): Promise<void> {
   await invokeTauri('stop_runtime');
 }
 
-export async function desktopRuntimeStatus(): Promise<ClientRuntime | null> {
+export async function desktopRuntimeStatus(): Promise<DesktopRuntime | null> {
   if (!isDesktopApp()) return null;
-  return invokeTauri<ClientRuntime | null>('runtime_status');
+  const value = await invokeTauri('runtime_status');
+  return value === null ? null : parseDesktopRuntime(value);
+}
+
+export async function getLocalAdminSession(runtime: DesktopRuntime): Promise<NativeAdminSession> {
+  const value = await invokeTauri<NativeAdminSession>('get_local_admin_session', { expectedRuntimeId: runtime.runtimeId });
+  if (value.runtimeId !== runtime.runtimeId || value.backendUrl !== runtime.backendUrl
+    || typeof value.adminToken !== 'string' || !/^[\x21-\x7e]+$/.test(value.adminToken)) {
+    throw new Error('本地认证返回了无效的会话，请重试。');
+  }
+  return value;
 }
 
 export async function desktopRuntimePortSettings(): Promise<RuntimePortSettings> {

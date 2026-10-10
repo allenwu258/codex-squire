@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Globe2, LoaderCircle, Monitor, RefreshCw, Server, ShieldAlert } from 'lucide-react';
 import { ErrorNotice } from '../components';
-import { desktopRuntimePortSettings, runtimeErrorMessage, startDesktopRuntime, type ClientRuntime, type RuntimeMode } from '../runtime';
+import { DEFAULT_RUNTIME_PORT_SETTINGS, desktopRuntimePortSettings, runtimeErrorMessage, startDesktopRuntime, type DesktopRuntime, type RuntimeMode } from '../runtime';
 
-export function Launcher({ onStarted, initialError = '' }: { onStarted: (runtime: ClientRuntime) => void; initialError?: string }) {
+export function Launcher({ onStarted, initialError = '' }: { onStarted: (runtime: DesktopRuntime) => void; initialError?: string }) {
   const [mode, setMode] = useState<RuntimeMode>('local');
   const [frontendBroadcast, setFrontendBroadcast] = useState(false);
   const [advertisedHost, setAdvertisedHost] = useState('127.0.0.1');
@@ -17,13 +17,20 @@ export function Launcher({ onStarted, initialError = '' }: { onStarted: (runtime
 
   useEffect(() => {
     let stopped = false;
+    setSettingsLoaded(false);
     setSettingsError('');
     void desktopRuntimePortSettings().then(settings => {
       if (stopped) return;
       setBackendPort(String(settings.backendPort));
       setFrontendPort(String(settings.frontendPort));
       setSettingsLoaded(true);
-    }).catch(failure => { if (!stopped) setSettingsError(runtimeErrorMessage(failure)); });
+    }).catch(failure => {
+      if (stopped) return;
+      setBackendPort(value => value || String(DEFAULT_RUNTIME_PORT_SETTINGS.backendPort));
+      setFrontendPort(value => value || String(DEFAULT_RUNTIME_PORT_SETTINGS.frontendPort));
+      setSettingsLoaded(true);
+      setSettingsError(runtimeErrorMessage(failure));
+    });
     return () => { stopped = true; };
   }, [loadRevision]);
 
@@ -47,7 +54,7 @@ export function Launcher({ onStarted, initialError = '' }: { onStarted: (runtime
       <div><span className="eyebrow">DESKTOP RUNTIME</span><h1>启动 Codex Squire</h1><p>选择运行范围，启动后端和管理界面。</p></div>
     </div>
     {error && <ErrorNotice message={error} />}
-    {settingsError && <div><ErrorNotice message={settingsError} /><button type="button" className="button" onClick={() => setLoadRevision(value => value + 1)}><RefreshCw size={16} />重新读取端口</button></div>}
+    {settingsError && <div className="launcher-settings-error"><ErrorNotice message={settingsError} /><p className="muted">无法读取已保存的端口。你可以手动填写端口，或明确恢复默认端口后启动；启动时会尝试保存当前值。</p><div className="launcher-settings-actions"><button type="button" className="button" onClick={() => { setBackendPort(String(DEFAULT_RUNTIME_PORT_SETTINGS.backendPort)); setFrontendPort(String(DEFAULT_RUNTIME_PORT_SETTINGS.frontendPort)); }}><RefreshCw size={16} />恢复默认端口</button><button type="button" className="button" onClick={() => setLoadRevision(value => value + 1)}><RefreshCw size={16} />重新读取端口</button></div></div>}
     <div className="launcher-modes" role="radiogroup" aria-label="运行模式">
       <button type="button" disabled={busy} className={`launcher-mode ${mode === 'local' ? 'selected' : ''}`} aria-pressed={mode === 'local'} onClick={() => { setMode('local'); setFrontendBroadcast(false); }}>
         <Monitor size={22} /><span><strong>本地模式</strong><small>仅本机访问，打开桌面管理界面</small></span>

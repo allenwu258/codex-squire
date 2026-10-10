@@ -3,5 +3,7 @@
   "identifier": "default",
   "description": "Default permissions for the Codex Squire desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "webviews": ["main"],
+  "local": true,
+  "permissions": ["core:default", "allow-start-runtime", "allow-stop-runtime", "allow-runtime-status", "allow-runtime-port-settings", "allow-get-local-admin-session"]
 }

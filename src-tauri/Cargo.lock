@@ -348,6 +348,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tiny_http",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

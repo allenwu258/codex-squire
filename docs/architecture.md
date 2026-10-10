@@ -163,6 +163,8 @@ UsageInspector 只观察数据：
 
 本地模式使用 Tauri 内置 React 资源；服务模式由 Rust 静态服务器提供前端，默认绑定 `127.0.0.1`，明确选择后才绑定 `0.0.0.0`。Windows 便携式发布包已支持随包精简 JRE、后端 JAR 和前端 dist；安装升级、系统凭据库、Job Object 和服务模式监听隔离仍待完成。详细运行时设计见 [桌面客户端架构](desktop.md)。
 
+本地内置窗口通过受限 IPC 自动认证，所有普通浏览器和服务模式内置窗口仍需管理令牌。Rust 将真实数据目录和实例绑定到托管 Java 子进程，只允许受信任 `main` 页面读取本地会话；React 会话 hook 管理认证来源、实例和代次，自动凭据仅在内存中保存。原生 `backendUrl` 使用回环地址，公共描述使用公布地址。后端继续统一 Bearer 校验，详情见 [自动认证设计](desktop-local-auth-design.md)。Codex 配置文件修改尚未实现。
+
 桌面打包仍需要完善：Java 子进程退出回收、安装升级、后端就绪握手的失败诊断、动态端口发现、Tauri origin/CSP、系统凭据库和升级迁移。Windows 便携式 ZIP 的 JRE 裁剪、资源布局和运行时发现已由 `scripts/package-release.ps1` 实现。
 
 会话管理应新增 session 领域并解决 response ID 到 Provider 的持久化绑定；提示词管理新增 prompt 领域，不依赖网关内部日志正文。日志归档、按时段统计和基于实际延迟的负载均衡可在保留现有 API 的前提下演进。

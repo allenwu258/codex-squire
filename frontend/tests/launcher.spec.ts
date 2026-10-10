@@ -55,7 +55,7 @@ test('launcher rejects invalid numeric ports before invoking the desktop runtime
   }
 });
 
-test('launcher blocks startup after a settings read error and allows retry', async ({ page }) => {
+test('launcher recovers from a settings read error with defaults or manual ports', async ({ page }) => {
   await page.addInitScript(() => {
     const state = window as Window & { settingsReadable: boolean };
     state.settingsReadable = false;
@@ -70,10 +70,22 @@ test('launcher blocks startup after a settings read error and allows retry', asy
   await page.goto('/');
   await expect(page.getByRole('alert')).toContainText('Port settings could not be read');
   const start = page.getByRole('button', { name: '\u542f\u52a8\u8fd0\u884c\u65f6', exact: true });
-  await expect(start).toBeDisabled();
+  await expect(start).toBeEnabled();
+  const backend = page.getByLabel('\u540e\u7aef\u7aef\u53e3', { exact: true });
+  await expect(backend).toHaveValue('18787');
+  await backend.fill('19891');
+  await page.getByRole('button', { name: '\u670d\u52a1\u6a21\u5f0f' }).click();
+  const frontend = page.getByLabel('\u7ba1\u7406\u7f51\u9875\u7aef\u53e3', { exact: true });
+  await frontend.fill('19892');
+  await expect(backend).toHaveValue('19891');
+  await expect(frontend).toHaveValue('19892');
+  await page.getByRole('button', { name: '\u6062\u590d\u9ed8\u8ba4\u7aef\u53e3', exact: true }).click();
+  await expect(backend).toHaveValue('18787');
+  await expect(frontend).toHaveValue('18788');
   await page.evaluate(() => { (window as Window & { settingsReadable: boolean }).settingsReadable = true; });
   await page.getByRole('button', { name: '\u91cd\u65b0\u8bfb\u53d6\u7aef\u53e3', exact: true }).click();
-  await expect(page.getByLabel('\u540e\u7aef\u7aef\u53e3', { exact: true })).toHaveValue('18787');
+  await expect(backend).toHaveValue('18787');
+  await expect(frontend).toHaveValue('18788');
   await expect(start).toBeEnabled();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

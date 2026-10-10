@@ -7,7 +7,10 @@ export class ApiError extends Error {
 export class ApiClient {
   private readonly baseUrl: string;
 
-  constructor(private readonly token: string, baseUrl?: string) {
+  constructor(private readonly token: string, baseUrl?: string, private readonly session?: {
+    signal: AbortSignal;
+    onUnauthorized: () => void;
+  }) {
     this.baseUrl = (baseUrl ?? '').replace(/\/$/, '');
   }
 
@@ -21,9 +24,11 @@ export class ApiClient {
       headers: { Authorization: `Bearer ${this.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(version === undefined ? {} : { 'If-Match': `"${version}"` }) },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
+      redirect: 'error',
+      signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : []), ...(this.session ? [this.session.signal] : [])]),
     });
     if (!response.ok) {
+      if (response.status === 401 && !this.session?.signal.aborted) this.session?.onUnauthorized();
       const error = await response.json().catch(() => null);
       throw new ApiError(response.status, error?.error?.message ?? `请求失败 (${response.status})`, error?.error?.code);
     }
@@ -53,7 +58,8 @@ export class ApiClient {
   async gatewayResponse(token: string, body: unknown, signal?: AbortSignal): Promise<string> {
     const response = await fetch(this.endpoint('/v1/responses'), { method: 'POST', headers: {
       Authorization: `Bearer ${token}`, 'Content-Type': 'application/json',
-    }, body: JSON.stringify(body), signal: signal ?? AbortSignal.timeout(120000) });
+    }, body: JSON.stringify(body), redirect: 'error',
+    signal: AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : []), ...(this.session ? [this.session.signal] : [])]) });
     const text = await response.text();
     if (!response.ok) {
       throw new ApiError(response.status, `HTTP ${response.status}: ${text.slice(0, 600)}`);
