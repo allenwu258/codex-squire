@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="256" height="256" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Squire title bar icon</title>
+  <desc id="desc">A transparent shield and scroll with bold outlines and three text lines.</desc>
+  <path fill="#0d2b49" fill-rule="evenodd" d="M7 1 13 3.2V7.2C13 10.6 10.4 13.4 7 15 3.6 13.4 1 10.6 1 7.2V3.2ZM7 2.5 2.5 4.2V7.2C2.5 9.8 4.4 12 7 13.4 9.6 12 11.5 9.8 11.5 7.2V4.2Z"/>
+  <g stroke="#0d2b49" stroke-width="1" stroke-linejoin="round">
+    <path fill="#b9c4ce" d="M6.5 4.5H5.5Q4.5 4.5 4.5 5.5V12.5H6.5Z"/>
+    <path fill="#f7f9fa" d="M6.5 4.5H13.5V12.5H6.5Z"/>
+    <path fill="#d8e0e6" d="M12.5 12.5V3.5A1 1 0 0 1 14.5 3.5V12.5Z"/>
+    <path fill="#f7f9fa" d="M13.5 11.5H5.5A1 1 0 0 0 5.5 13.5H13.5Z"/>
+    <circle cx="13.5" cy="12.5" r="1" fill="#b9c4ce"/>
+    <path fill="none" stroke-linecap="butt" d="M7.5 6.5H11.5M7.5 8.5H11.5M7.5 10.5H10.5"/>
+  </g>
+</svg>

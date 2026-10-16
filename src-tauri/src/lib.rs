@@ -14,6 +14,8 @@ use tauri::{AppHandle, Manager, RunEvent, State, Webview, WebviewWindowBuilder};
 use tiny_http::{Header, Response, Server, StatusCode};
 
 mod local_auth;
+#[cfg(windows)]
+mod window_icons;
 use local_auth::{
     authorize_caller, development_url, read_admin_token, trusted_page, NativeAdminSession,
     NativeAuthError,
@@ -452,9 +454,16 @@ pub fn run() {
                 .find(|window| window.label == "main")
                 .ok_or("main window configuration is missing")?;
             let dev_url = development_url(app.handle());
-            WebviewWindowBuilder::from_config(app, config)?
+            let window = WebviewWindowBuilder::from_config(app, config)?
+                .icon(tauri::include_image!("icons/icon.png"))?
                 .on_navigation(move |url| trusted_page(url, dev_url.as_ref()))
                 .build()?;
+            #[cfg(windows)]
+            if let Err(error) = window_icons::install(&window) {
+                eprintln!("Unable to configure native window icons: {error}");
+            }
+            #[cfg(not(windows))]
+            let _ = window;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

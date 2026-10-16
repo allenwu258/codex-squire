@@ -135,6 +135,31 @@ Codex-Squire-0.2.3-windows-x64/
 
 ## 桌面验收
 
+### 应用图标
+
+桌面图标源文件为 `src-tauri/icons/app-icon.svg`，保留盾牌与卷轴图形，使用透明背景。PNG、Windows ICO 和 macOS ICNS 使用 Tauri 工具生成，避免给任务栏图标加入不透明方形底板。修改源文件后从项目根目录执行：
+
+```powershell
+pnpm --dir frontend exec tauri icon ../src-tauri/icons/app-icon.svg --output ../.runtime/generated-icons
+Get-ChildItem .runtime/generated-icons -File | Copy-Item -Destination src-tauri/icons
+```
+
+以上只更新桌面资源；移动端图标遵循各平台独立的图标规范。重新构建应用后，使用新 exe 检查任务栏图标。
+
+Windows 标题栏与任务栏分别设置 `ICON_SMALL` 和 `ICON_BIG`。标题栏使用独立的 `src-tauri/icons/window-icon.svg`：保留盾牌和卷轴，去除渐变与内层细线，将正文减少为三条粗线，以适应小尺寸显示。使用项目已有 Tauri 工具生成 `16/20/24/28/32/40/48/64` 像素 PNG：
+
+```powershell
+.\scripts\generate-window-icons.ps1
+```
+
+`src-tauri/src/window_icons.rs` 在窗口创建时读取实际 DPI 与系统小图标尺寸，选择对应 PNG，使用 Windows 图标资源 API 创建匹配物理尺寸的 `ICON_SMALL`。遇到其他尺寸时从不小于目标尺寸的版本缩放；超过最大版本时使用 `64×64`。收到 Tauri `ScaleFactorChanged` 事件后更新标题栏图标。`ICON_BIG` 独立保留完整 `512×512` 图像，供任务栏和 Alt-Tab 使用。
+
+图片全部嵌入 exe，不依赖运行时外部文件。原生句柄在新图标设置后或窗口销毁后释放；不得销毁 `WM_SETICON` 返回的 Tauri/系统旧句柄。图标初始化或 DPI 更新失败时保留已有图标，不阻止应用启动。其他平台继续使用 Tauri 窗口图标；ICO 仍用于 exe 与快捷方式。
+
+发布验收应分别读取实际窗口 `ICON_SMALL` 和 `ICON_BIG`，确认标题栏尺寸匹配当前 DPI、任务栏图标为 `512×512`、背景透明。Windows 原生测试覆盖多种 DPI 对应尺寸、大小图标独立性、重复更新以及替换和关闭后的句柄释放；实际跨显示器移动仍需在不同 DPI 的显示器上验收。
+
+### 认证验收
+
 初始化共享 Java / Node 环境、构建后端后，从项目根运行：
 
 ```powershell
